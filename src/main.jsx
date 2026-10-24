@@ -16,6 +16,7 @@ function Header() {
         <a href="#trainers" onClick={() => setMenuOpen(false)}>Find a trainer</a>
         <a href="#how-it-works" onClick={() => setMenuOpen(false)}>How it works</a>
         <a href="#stories" onClick={() => setMenuOpen(false)}>Our approach</a>
+        <a href="/login" className="nav-login">Log in</a>
       </nav>
       <a className="header-cta" href="#waitlist">Get early access <ArrowUpRight size={15} /></a>
     </header>
@@ -86,11 +87,84 @@ function WaitlistForm() {
   );
 }
 
+function TrainerPortal({ token }) {
+  const [data, setData] = useState(null);
+  const [error, setError] = useState('');
+  const [message, setMessage] = useState('');
+  const [updatingId, setUpdatingId] = useState('');
+  const headers = { Authorization: ['Bearer', token].join(' '), 'Content-Type': 'application/json' };
+
+  useEffect(() => {
+    fetch('/api/portal', { headers })
+      .then(async (response) => {
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || 'Could not load the portal.');
+        setData(result);
+      })
+      .catch((requestError) => setError(requestError.message || 'Could not connect to the server.'));
+  }, []);
+
+  async function decide(booking, status) {
+    setUpdatingId(booking.bookingId);
+    setError('');
+    setMessage('');
+    try {
+      const response = await fetch(`/api/portal/bookings/${encodeURIComponent(booking.bookingId)}`, {
+        method: 'PUT',
+        headers,
+        body: JSON.stringify({ status }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Could not update the booking.');
+      setData({ clients: result.clients, bookings: result.bookings });
+      setMessage(`Booking marked ${status.toLowerCase()}. An email to ${booking.clientEmail} was recorded in the Email log.`);
+    } catch (requestError) {
+      setError(requestError.message || 'Could not connect to the server.');
+    } finally {
+      setUpdatingId('');
+    }
+  }
+
+  const money = (value) => `$${Number(value).toFixed(2)}`;
+  const when = (value) => new Date(value).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+  const pending = (data?.bookings || []).filter((booking) => booking.status === 'Pending');
+  const billing = (data?.bookings || []).filter((booking) => ['Confirmed', 'Billed'].includes(booking.status))
+    .sort((left, right) => left.requestedDatetime.localeCompare(right.requestedDatetime));
+  const bookingsFor = (userId) => (data?.bookings || []).filter((booking) => booking.userId === userId);
+
+  return (
+    <>
+      {error && <p className="form-message error" role="alert">{error}</p>}
+      {message && <p className="admin-section-description" role="status">{message}</p>}
+      {!data && !error && <p className="empty-state">Loading...</p>}
+      {data && <>
+        <section className="entries">
+          <div className="entries-heading"><h2>Pending session requests</h2><span>{pending.length} pending</span></div>
+          {pending.length === 0 ? <p className="empty-state">No pending requests.</p> : <div className="table-scroll"><table><thead><tr><th>Client</th><th>Trainer</th><th>Requested time</th><th>Price</th><th>Actions</th></tr></thead><tbody>{pending.map((booking) => <tr key={booking.bookingId}><td>{booking.clientName}<br /><small>{booking.clientEmail}</small></td><td>{booking.coachName}</td><td>{when(booking.requestedDatetime)}</td><td>{money(booking.hourlyRate)}</td><td><div className="coach-actions"><button type="button" onClick={() => decide(booking, 'Confirmed')} disabled={Boolean(updatingId)}><Check size={14} />Confirm</button><button type="button" className="delete-coach" onClick={() => decide(booking, 'Rejected')} disabled={Boolean(updatingId)}><X size={14} />Reject</button></div></td></tr>)}</tbody></table></div>}
+        </section>
+        <section className="entries">
+          <div className="entries-heading"><h2>Sessions to bill</h2><span>{billing.length} open</span></div>
+          <p className="admin-section-description">After a session is completed, click Bill to email the client the cost. When payment arrives, click Mark paid to complete it.</p>
+          {billing.length === 0 ? <p className="empty-state">No confirmed or billed sessions.</p> : <div className="table-scroll"><table><thead><tr><th>Client</th><th>Trainer</th><th>Session time</th><th>Amount</th><th>Status</th><th>Actions</th></tr></thead><tbody>{billing.map((booking) => <tr key={booking.bookingId}><td>{booking.clientName}<br /><small>{booking.clientEmail}</small></td><td>{booking.coachName}</td><td>{when(booking.requestedDatetime)}</td><td>{money(booking.amount)}</td><td>{booking.status}</td><td><div className="coach-actions">{booking.status === 'Confirmed'
+            ? <button type="button" onClick={() => decide(booking, 'Billed')} disabled={Boolean(updatingId)}><Check size={14} />Bill client</button>
+            : <button type="button" onClick={() => decide(booking, 'Complete')} disabled={Boolean(updatingId)}><Check size={14} />Mark paid</button>}</div></td></tr>)}</tbody></table></div>}
+        </section>
+        <section className="entries">
+          <div className="entries-heading"><h2>Active clients</h2><span>{data.clients.length} active</span></div>
+          {data.clients.length === 0 ? <p className="empty-state">No active clients yet. Clients become active after their first login.</p> : <div className="table-scroll"><table><thead><tr><th>Client</th><th>Goal</th><th>Trainer</th><th>Spent so far (paid)</th><th>Outstanding (billed)</th><th>Upcoming confirmed</th><th>Booking history</th></tr></thead><tbody>{data.clients.map((client) => <tr key={client.userId}><td>{client.fullName}<br /><small>{client.email}</small></td><td>{client.fitnessFocus}</td><td>{client.coachName || 'None'}</td><td>{money(client.spentSoFar)}</td><td>{money(client.outstanding)}</td><td>{money(client.upcomingConfirmed)}</td><td><details><summary>{bookingsFor(client.userId).length} sessions</summary>{bookingsFor(client.userId).length === 0 ? <p>No sessions yet.</p> : <ul>{bookingsFor(client.userId).map((booking) => <li key={booking.bookingId}>{when(booking.requestedDatetime)} · {booking.coachName} · {booking.status}{['Confirmed', 'Billed', 'Complete'].includes(booking.status) ? ` · ${money(booking.amount)}` : ''}</li>)}</ul>}</details></td></tr>)}</tbody></table></div>}
+        </section>
+      </>}
+    </>
+  );
+}
+
 function AdminDashboard() {
+  const [view, setView] = useState('dashboard');
   const [token, setToken] = useState('');
   const [entries, setEntries] = useState(null);
   const [users, setUsers] = useState([]);
   const [coaches, setCoaches] = useState([]);
+  const [emails, setEmails] = useState([]);
   const [authenticated, setAuthenticated] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
@@ -132,6 +206,8 @@ function AdminDashboard() {
       setEntries(waitlistResult.entries);
       setCoaches(coachesResult.coaches);
       setUsers(usersResult.users);
+      const emailsResponse = await fetch('/api/emails', { headers });
+      setEmails(emailsResponse.ok ? (await emailsResponse.json()).emails : []);
       setAuthenticated(true);
     } catch (requestError) {
       setError(requestError.message || 'Could not connect to the server.');
@@ -305,7 +381,12 @@ function AdminDashboard() {
           <button className="button button-dark" disabled={loading}>{loading ? 'Checking...' : 'Open admin'} <ArrowRight size={16} /></button>
         </form>}
         {error && <p className="form-message error" role="alert">{error}</p>}
-        {authenticated && <>
+        {authenticated && <nav className="admin-nav" aria-label="Admin sections">
+          <button type="button" className={view === 'dashboard' ? 'active' : ''} onClick={() => setView('dashboard')}>Dashboard</button>
+          <button type="button" className={view === 'portal' ? 'active' : ''} onClick={() => setView('portal')}>Trainer Management Portal</button>
+        </nav>}
+        {authenticated && view === 'portal' && <TrainerPortal token={token} />}
+        {authenticated && view === 'dashboard' && <>
           <section className="entries">
             <div className="entries-heading"><h2>{editingCoachId ? 'Update trainer' : 'Add a trainer'}</h2></div>
             <p className="admin-section-description">{editingCoachId ? 'Update this trainer’s roster details.' : 'Add a coach to your roster with their specialty, coaching style, and training environment.'}</p>
@@ -374,7 +455,8 @@ function AdminDashboard() {
             )}
             {users.length === 0 ? <p className="empty-state">No intake users yet.</p> : <div className="table-scroll"><table><thead><tr><th>Name</th><th>Email</th><th>Fitness focus</th><th>Matched trainer</th><th>Status</th><th>Submitted</th><th>Actions</th></tr></thead><tbody>{users.map((user) => <tr key={user.userId}><td>{user.fullName}</td><td>{user.email}</td><td>{user.fitnessFocus}</td><td>{user.coachName || 'No match available'}</td><td>{user.accountStatus || 'Lead'}</td><td>{new Date(`${user.createdAt.replace(' ', 'T')}Z`).toLocaleString()}</td><td><div className="coach-actions"><button type="button" onClick={() => editUser(user)} aria-label={`Edit ${user.fullName}`} disabled={Boolean(deletingUserId)}><Pencil size={14} />Edit</button><button type="button" className="delete-coach" onClick={() => deleteUser(user)} aria-label={`Delete ${user.fullName}`} disabled={Boolean(deletingUserId)}><Trash2 size={14} />{deletingUserId === user.userId ? 'Deleting...' : 'Delete'}</button></div></td></tr>)}</tbody></table></div>}
           </section>
-          <button className="admin-logout" onClick={() => { setAuthenticated(false); setToken(''); setEntries(null); setUsers([]); setCoaches([]); }}>Lock admin dashboard</button>
+          <div className="entries"><div className="entries-heading"><h2>Email log</h2><span>{emails.length} total</span></div>{emails.length === 0 ? <p className="empty-state">No emails recorded yet.</p> : <div className="table-scroll"><table><thead><tr><th>Recipient</th><th>Subject</th><th>Status</th><th>Setup email text</th><th>Created</th></tr></thead><tbody>{emails.map((email) => <tr key={email.emailId}><td>{email.recipient}</td><td>{email.subject}</td><td>{email.status}{email.error ? ` (${email.error})` : ''}</td><td><details><summary>View</summary><pre style={{ whiteSpace: 'pre-wrap' }}>{email.bodyText}</pre></details></td><td>{new Date(`${email.createdAt.replace(' ', 'T')}Z`).toLocaleString()}</td></tr>)}</tbody></table></div>}</div>
+          <button className="admin-logout" onClick={() => { setAuthenticated(false); setToken(''); setEntries(null); setUsers([]); setCoaches([]); setEmails([]); }}>Lock admin dashboard</button>
         </>}
       </section>
     </main>
@@ -564,8 +646,8 @@ function IntakePage() {
             <span className="intake-complete-icon"><Check size={25} /></span>
             <span className="intake-step-label">YOU’RE ALL SET</span>
             <h1>Thanks for sharing what matters to you.</h1>
-            <p className="intake-instruction">{matchedCoach ? `Your recommended trainer is ${matchedCoach.fullName} (${matchedCoach.specialties}).` : 'We’ll be in touch when a trainer matching your focus is available.'}</p>
-            <a className="intake-next" href="/">Back to Forme <ArrowRight size={18} /></a>
+            <p className="intake-instruction">{matchedCoach ? `Your recommended trainer is ${matchedCoach.fullName} (${matchedCoach.specialties}). ` : ''}            We’ve prepared an email with your temporary password and a login link. Your account status is Lead until you log in and set a new password.</p>
+                        <a className="intake-next" href="/login">Log in <ArrowRight size={18} /></a>
           </section>
         )}
 
@@ -583,9 +665,264 @@ function IntakePage() {
   );
 }
 
+function SetupAccountPage() {
+  const token = new URLSearchParams(window.location.search).get('token') || '';
+  const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [status, setStatus] = useState({ type: '', message: '' });
+  const [submitting, setSubmitting] = useState(false);
+  const [complete, setComplete] = useState(false);
+
+  async function submit(event) {
+    event.preventDefault();
+    if (password !== confirmPassword) {
+      setStatus({ type: 'error', message: 'Your passwords do not match.' });
+      return;
+    }
+    setSubmitting(true);
+    setStatus({ type: '', message: '' });
+    try {
+      const response = await fetch('/api/account/setup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token, password }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Could not set your password.');
+      setComplete(true);
+    } catch (error) {
+      setStatus({ type: 'error', message: error.message || 'Could not connect. Please try again.' });
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <main className="intake-page">
+      <div className="intake-shell">
+        <header className="intake-header">
+          <a className="brand intake-brand" href="/" aria-label="Forme home">forme<span className="brand-dot">.</span></a>
+        </header>
+        <section className="intake-content setup-content" aria-labelledby="setup-title">
+          {complete ? (
+            <div className="intake-complete" aria-live="polite">
+              <span className="intake-complete-icon"><Check size={25} /></span>
+              <span className="intake-step-label">PASSWORD SET</span>
+              <h1 id="setup-title">Your account is ready.</h1>
+              <p className="intake-instruction">Your account status is Active. <a href="/login">Log in</a> to book a session.</p>
+            </div>
+          ) : (
+            <>
+              <span className="intake-step-label">WELCOME TO FORME</span>
+              <h1 id="setup-title">Set your password.</h1>
+              <p className="intake-instruction">Choose a password to finish setting up your account. Use at least 12 characters.</p>
+              {token ? (
+                <form className="intake-form" onSubmit={submit}>
+                  <label htmlFor="setup-password">New password</label>
+                  <input id="setup-password" type="password" autoComplete="new-password" minLength="12" maxLength="128" required value={password} onChange={(event) => setPassword(event.target.value)} />
+                  <label htmlFor="setup-confirm-password">Confirm password</label>
+                  <input id="setup-confirm-password" type="password" autoComplete="new-password" minLength="12" maxLength="128" required value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} />
+                  {status.message && <p className="intake-error" role="alert">{status.message}</p>}
+                  <button className="intake-next" type="submit" disabled={submitting}>{submitting ? 'Saving...' : 'Set password'} <ArrowRight size={18} /></button>
+                </form>
+              ) : (
+                <p className="intake-error" role="alert">This account setup link is invalid or has expired. Please complete the trainer form again to request a new link.</p>
+              )}
+            </>
+          )}
+        </section>
+        <p className="intake-footnote">Your journey, your pace. We’re glad you’re here.</p>
+      </div>
+    </main>
+  );
+}
+
+function formatDateTime(value) {
+  return new Date(value).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+}
+
+function ClientPortal() {
+  const [token, setToken] = useState(() => sessionStorage.getItem('forme-client-token') || '');
+  const [data, setData] = useState(null);
+  const [loginForm, setLoginForm] = useState({ email: '', password: '' });
+  const [passwordForm, setPasswordForm] = useState({ currentPassword: '', newPassword: '', confirmPassword: '' });
+  const [bookingTime, setBookingTime] = useState('');
+  const [status, setStatus] = useState({ type: '', message: '' });
+  const [busy, setBusy] = useState(false);
+
+  function signOut(message = '') {
+    sessionStorage.removeItem('forme-client-token');
+    setToken('');
+    setData(null);
+    setStatus(message ? { type: 'error', message } : { type: '', message: '' });
+  }
+
+  async function api(path, options = {}, authToken = token) {
+    const response = await fetch(path, {
+      ...options,
+      headers: { 'Content-Type': 'application/json', ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}) },
+    });
+    const result = await response.json();
+    if (!response.ok) {
+      if (response.status === 401 && authToken) signOut('Your session has ended. Please log in again.');
+      throw new Error(result.error || 'Something went wrong.');
+    }
+    return result;
+  }
+
+  useEffect(() => {
+    if (!token) return;
+    api('/api/me').then(setData).catch(() => {});
+  }, [token]);
+
+  async function run(action) {
+    setBusy(true);
+    setStatus({ type: '', message: '' });
+    try {
+      await action();
+    } catch (error) {
+      setStatus({ type: 'error', message: error.message || 'Could not connect. Please try again.' });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const login = (event) => {
+    event.preventDefault();
+    run(async () => {
+      const result = await api('/api/auth/login', { method: 'POST', body: JSON.stringify(loginForm) }, '');
+      sessionStorage.setItem('forme-client-token', result.token);
+      setLoginForm({ email: '', password: '' });
+      setToken(result.token);
+    });
+  };
+
+  const changePassword = (event) => {
+    event.preventDefault();
+    if (passwordForm.newPassword !== passwordForm.confirmPassword) {
+      setStatus({ type: 'error', message: 'Your new passwords do not match.' });
+      return;
+    }
+    run(async () => {
+      const result = await api('/api/auth/change-password', {
+        method: 'POST',
+        body: JSON.stringify({ currentPassword: passwordForm.currentPassword, newPassword: passwordForm.newPassword }),
+      });
+      setPasswordForm({ currentPassword: '', newPassword: '', confirmPassword: '' });
+      setData((current) => ({ ...current, user: result.user }));
+      setStatus({ type: 'success', message: 'Password updated. Your account is now Active.' });
+    });
+  };
+
+  const changeTrainer = (coachId) => run(async () => {
+    const result = await api('/api/me/coach', { method: 'PUT', body: JSON.stringify({ coachId }) });
+    setData((current) => ({ ...current, user: result.user }));
+    setStatus({ type: 'success', message: 'Your trainer has been updated.' });
+  });
+
+  const bookSession = (event) => {
+    event.preventDefault();
+    run(async () => {
+      const result = await api('/api/me/bookings', {
+        method: 'POST',
+        body: JSON.stringify({ coachId: data.user.coachId, datetime: new Date(bookingTime).toISOString() }),
+      });
+      setData((current) => ({ ...current, user: result.user, bookings: result.bookings }));
+      setBookingTime('');
+      setStatus({ type: 'success', message: 'Booking requested. Its status is Pending until your trainer confirms.' });
+    });
+  };
+
+  const user = data?.user;
+  const now = Date.now();
+  const bookings = data?.bookings || [];
+  const pastBookings = bookings.filter((booking) => new Date(booking.requestedDatetime).getTime() < now);
+  const upcomingBookings = bookings.filter((booking) => new Date(booking.requestedDatetime).getTime() >= now).reverse();
+  const bookingTable = (rows) => (
+    <div className="table-scroll"><table><thead><tr><th>Trainer</th><th>Date &amp; time</th><th>Status</th></tr></thead><tbody>
+      {rows.map((booking) => <tr key={booking.bookingId}><td>{booking.coachName}</td><td>{formatDateTime(booking.requestedDatetime)}</td><td>{booking.status}</td></tr>)}
+    </tbody></table></div>
+  );
+
+  return (
+    <main className="intake-page">
+      <div className="intake-shell">
+        <header className="intake-header">
+          <a className="brand intake-brand" href="/" aria-label="Forme home">forme<span className="brand-dot">.</span></a>
+          {token && <button className="intake-save" type="button" onClick={() => api('/api/auth/logout', { method: 'POST' }).catch(() => {}).finally(() => signOut())}>Log out</button>}
+        </header>
+
+        {!token && (
+          <section className="intake-content setup-content" aria-labelledby="login-title">
+            <span className="intake-step-label">WELCOME BACK</span>
+            <h1 id="login-title">Log in to Forme.</h1>
+            <p className="intake-instruction">Use the email you signed up with and the password from your welcome email.</p>
+            <form className="intake-form" onSubmit={login}>
+              <label htmlFor="login-email">Email address</label>
+              <input id="login-email" type="email" autoComplete="email" required maxLength="254" value={loginForm.email} onChange={(event) => setLoginForm({ ...loginForm, email: event.target.value })} />
+              <label htmlFor="login-password">Password</label>
+              <input id="login-password" type="password" autoComplete="current-password" required maxLength="128" value={loginForm.password} onChange={(event) => setLoginForm({ ...loginForm, password: event.target.value })} />
+              {status.message && <p className="intake-error" role="alert">{status.message}</p>}
+              <button className="intake-next" type="submit" disabled={busy}>{busy ? 'Logging in...' : 'Log in'} <ArrowRight size={18} /></button>
+            </form>
+          </section>
+        )}
+
+        {token && !user && <p className="intake-instruction">Loading your dashboard...</p>}
+
+        {user?.mustChangePassword && (
+          <section className="intake-content setup-content" aria-labelledby="change-title">
+            <span className="intake-step-label">FIRST LOGIN</span>
+            <h1 id="change-title">Choose a new password.</h1>
+            <p className="intake-instruction">Replace your temporary password (at least 12 characters) to activate your account.</p>
+            <form className="intake-form" onSubmit={changePassword}>
+              <label htmlFor="current-password">Temporary password</label>
+              <input id="current-password" type="password" autoComplete="current-password" required maxLength="128" value={passwordForm.currentPassword} onChange={(event) => setPasswordForm({ ...passwordForm, currentPassword: event.target.value })} />
+              <label htmlFor="new-password">New password</label>
+              <input id="new-password" type="password" autoComplete="new-password" required minLength="12" maxLength="128" value={passwordForm.newPassword} onChange={(event) => setPasswordForm({ ...passwordForm, newPassword: event.target.value })} />
+              <label htmlFor="confirm-password">Confirm new password</label>
+              <input id="confirm-password" type="password" autoComplete="new-password" required minLength="12" maxLength="128" value={passwordForm.confirmPassword} onChange={(event) => setPasswordForm({ ...passwordForm, confirmPassword: event.target.value })} />
+              {status.message && <p className={status.type === 'error' ? 'intake-error' : 'intake-instruction'} role="alert">{status.message}</p>}
+              <button className="intake-next" type="submit" disabled={busy}>{busy ? 'Saving...' : 'Update password'} <ArrowRight size={18} /></button>
+            </form>
+          </section>
+        )}
+
+        {user && !user.mustChangePassword && (
+          <section className="intake-content client-dashboard" aria-labelledby="dashboard-title">
+            <span className="intake-step-label">CLIENT DASHBOARD &amp; GOAL TRACKING</span>
+            <h1 id="dashboard-title">Hi {user.fullName.split(' ')[0]}.</h1>
+            <p className="intake-instruction">Account status: <strong>{user.accountStatus}</strong> · Your goal: <strong>{user.fitnessFocus}</strong></p>
+            {status.message && <p className={status.type === 'error' ? 'intake-error' : 'intake-instruction'} role="alert">{status.message}</p>}
+
+            <form className="intake-form" onSubmit={bookSession}>
+              <h2>Book a session</h2>
+              <label htmlFor="trainer-select">Trainer</label>
+              <select id="trainer-select" value={user.coachId || ''} disabled={busy} onChange={(event) => changeTrainer(event.target.value)}>
+                {!user.coachId && <option value="">Choose a trainer</option>}
+                {data.trainers.map((trainer) => <option key={trainer.coachId} value={trainer.coachId}>{trainer.fullName} — {trainer.specialties}</option>)}
+              </select>
+              <label htmlFor="booking-time">Date and time</label>
+              <input id="booking-time" type="datetime-local" required value={bookingTime} onChange={(event) => setBookingTime(event.target.value)} />
+              <button className="intake-next" type="submit" disabled={busy || !user.coachId}>{busy ? 'Sending...' : 'Request booking'} <ArrowRight size={18} /></button>
+            </form>
+
+            <h2>Upcoming &amp; pending bookings</h2>
+            {upcomingBookings.length === 0 ? <p className="empty-state">No upcoming bookings.</p> : bookingTable(upcomingBookings)}
+            <h2>Past bookings</h2>
+            {pastBookings.length === 0 ? <p className="empty-state">No past bookings yet.</p> : bookingTable(pastBookings)}
+          </section>
+        )}
+      </div>
+    </main>
+  );
+}
+
 function App() {
+  if (window.location.pathname === '/login' || window.location.pathname === '/dashboard') return <ClientPortal />;
   if (window.location.pathname === '/admin') return <AdminDashboard />;
   if (window.location.pathname === '/intake') return <IntakePage />;
+  if (window.location.pathname === '/setup-account') return <SetupAccountPage />;
   return <LandingPage />;
 }
 

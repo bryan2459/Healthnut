@@ -4,7 +4,16 @@ import Database from 'better-sqlite3';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID, scrypt as scryptCallback, timingSafeEqual } from 'node:crypto';
+import { promisify } from 'node:util';
+import nodemailer from 'nodemailer';
+
+const scrypt = promisify(scryptCallback);
+const setupTokenLifetimeMs = 24 * 60 * 60 * 1000;
+// Email is only sent when EMAIL_DELIVERY=enabled; otherwise emails are recorded in the email_log table.
+const emailDeliveryEnabled = process.env.EMAIL_DELIVERY === 'enabled';
+const clientSessionLifetimeMs = 12 * 60 * 60 * 1000;
+const bookingNotifyEmail = process.env.BOOKING_NOTIFY_EMAIL || 'mvs390@gmail.com';
 
 const app = express();
 const port = Number(process.env.PORT) || 3001;
@@ -41,6 +50,7 @@ db.exec(`
     email TEXT NOT NULL COLLATE NOCASE UNIQUE,
     fitness_focus TEXT NOT NULL,
     account_status TEXT DEFAULT 'Lead',
+    password_hash TEXT,
     assigned_coach_id TEXT,
     workout_log_url TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -65,7 +75,59 @@ db.exec(`
     FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
     FOREIGN KEY (coach_id) REFERENCES coaches(coach_id) ON DELETE CASCADE
   );
+
+  CREATE TABLE IF NOT EXISTS email_log (
+    email_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT,
+    recipient TEXT NOT NULL,
+    sender TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    body_text TEXT NOT NULL,
+    status TEXT NOT NULL,
+    error TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE TABLE IF NOT EXISTS client_sessions (
+    token_hash TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    expires_at INTEGER NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+  );
+
+  CREATE TABLE IF NOT EXISTS bookings (
+    booking_id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    coach_id TEXT NOT NULL,
+    requested_datetime TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'Pending',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+    FOREIGN KEY (coach_id) REFERENCES coaches(coach_id) ON DELETE CASCADE
+  );
+
+  CREATE TABLE IF NOT EXISTS account_setup_tokens (
+    token_hash TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    expires_at INTEGER NOT NULL,
+    used_at INTEGER,
+    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+  );
 `);
+
+const userColumns = new Set(db.pragma('table_info(users)').map((column) => column.name));
+if (!userColumns.has('password_hash')) {
+  db.exec('ALTER TABLE users ADD COLUMN password_hash TEXT');
+}
+
+if (!userColumns.has('must_change_password')) {
+  db.exec('ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0');
+}
+
+const bookingColumns = new Set(db.pragma('table_info(bookings)').map((column) => column.name));
+if (!bookingColumns.has('amount')) {
+  db.exec('ALTER TABLE bookings ADD COLUMN amount REAL NOT NULL DEFAULT 0');
+}
 
 const coachColumns = new Set(db.pragma('table_info(coaches)').map((column) => column.name));
 if (!coachColumns.has('style')) {
@@ -198,6 +260,95 @@ const focusKeywords = {
   'Energy & health': ['health', 'wellness', 'confidence', 'strength'],
 };
 
+function getMailSettings() {
+  const { SMTP_HOST, SMTP_PORT, SMTP_SECURE, SMTP_USER, SMTP_PASSWORD, EMAIL_FROM, PUBLIC_APP_URL } = process.env;
+  if (!SMTP_HOST || !SMTP_USER || !SMTP_PASSWORD || !EMAIL_FROM || !PUBLIC_APP_URL) return null;
+
+  const port = Number(SMTP_PORT) || 587;
+  let appUrl;
+  try {
+    appUrl = new URL(PUBLIC_APP_URL);
+  } catch {
+    throw new Error('PUBLIC_APP_URL must be a valid HTTPS URL.');
+  }
+  if (appUrl.protocol !== 'https:' && !(appUrl.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(appUrl.hostname))) {
+    throw new Error('PUBLIC_APP_URL must use HTTPS, except for localhost development.');
+  }
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error('SMTP_PORT must be a valid port number.');
+  }
+
+  return {
+    appUrl: appUrl.origin,
+    from: EMAIL_FROM,
+    transport: nodemailer.createTransport({
+      host: SMTP_HOST,
+      port,
+      secure: SMTP_SECURE === undefined ? port === 465 : SMTP_SECURE.toLowerCase() === 'true',
+      auth: { user: SMTP_USER, pass: SMTP_PASSWORD },
+    }),
+  };
+}
+
+function hashSetupToken(token) {
+  return createHash('sha256').update(token).digest('hex');
+}
+
+async function hashPassword(password) {
+  const salt = randomBytes(16).toString('hex');
+  const derivedKey = await scrypt(password, salt, 64);
+  return `scrypt$${salt}$${derivedKey.toString('hex')}`;
+}
+
+async function verifyPassword(password, stored) {
+  const [scheme, salt, hash] = (stored || '').split('$');
+  if (scheme !== 'scrypt' || !salt || !hash) return false;
+  const expected = Buffer.from(hash, 'hex');
+  const derivedKey = await scrypt(password, salt, expected.length);
+  return derivedKey.length === expected.length && timingSafeEqual(derivedKey, expected);
+}
+
+async function sendLoggedEmail({ userId, to, subject, text }) {
+  let mailSettings = null;
+  if (emailDeliveryEnabled) {
+    try {
+      mailSettings = getMailSettings();
+    } catch (error) {
+      console.error('Email configuration is invalid:', error);
+    }
+  }
+  const from = mailSettings?.from || process.env.EMAIL_FROM || 'Forme <no-reply@forme.test>';
+  const log = (status, errorMessage = null) => db.prepare(`
+    INSERT INTO email_log (user_id, recipient, sender, subject, body_text, status, error)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(userId, to, from, subject, text, status, errorMessage);
+
+  if (!mailSettings) {
+    if (emailDeliveryEnabled) log('failed', 'Email settings are not configured.');
+    else log('not_sent_delivery_disabled');
+    return false;
+  }
+  try {
+    await mailSettings.transport.sendMail({ from, to, subject, text });
+    log('sent');
+    return true;
+  } catch (error) {
+    console.error('Could not send email:', error);
+    log('failed', String(error.message || error).slice(0, 500));
+    return false;
+  }
+}
+
+function escapeHtml(value) {
+  return value.replace(/[&<>"']/g, (character) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;',
+  })[character]);
+}
+
 function matchCoach(fitnessFocus) {
   const coaches = db.prepare(
     'SELECT coach_id AS coachId, full_name AS fullName, specialties, style FROM coaches WHERE is_active = 1 ORDER BY full_name COLLATE NOCASE'
@@ -215,7 +366,7 @@ function matchCoach(fitnessFocus) {
   return rankedCoaches[0] || null;
 }
 
-app.post('/api/intake', (req, res) => {
+app.post('/api/intake', async (req, res) => {
   const fullName = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
   const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
   const fitnessFocus = typeof req.body?.goal === 'string' ? req.body.goal.trim() : '';
@@ -230,13 +381,62 @@ app.post('/api/intake', (req, res) => {
     return res.status(400).json({ error: 'Please select a valid fitness focus.' });
   }
 
+  let mailSettings = null;
+  let appUrl;
+  if (emailDeliveryEnabled) {
+    try {
+      mailSettings = getMailSettings();
+    } catch (error) {
+      console.error('Account setup email configuration is invalid:', error);
+      return res.status(503).json({ error: 'We can’t send account setup emails right now. Please try again later.' });
+    }
+    if (!mailSettings) {
+      return res.status(503).json({ error: 'Account setup email is not configured. Please try again later.' });
+    }
+    appUrl = mailSettings.appUrl;
+  } else {
+    try {
+      appUrl = new URL(process.env.PUBLIC_APP_URL || 'http://localhost:5173').origin;
+    } catch {
+      appUrl = 'http://localhost:5173';
+    }
+  }
+
+  const coach = matchCoach(fitnessFocus);
+  const userId = `USR-${randomUUID()}`;
+  const tempPassword = randomBytes(9).toString('base64url');
   try {
-    const coach = matchCoach(fitnessFocus);
-    const userId = `USR-${randomUUID()}`;
+    const passwordHash = await hashPassword(tempPassword);
     db.prepare(`
-      INSERT INTO users (user_id, full_name, email, fitness_focus, account_status, assigned_coach_id)
-      VALUES (?, ?, ?, ?, 'Lead', ?)
-    `).run(userId, fullName, email, fitnessFocus, coach?.coachId || null);
+      INSERT INTO users (user_id, full_name, email, fitness_focus, account_status, assigned_coach_id, password_hash, must_change_password)
+      VALUES (?, ?, ?, ?, 'Lead', ?, ?, 1)
+    `).run(userId, fullName, email, fitnessFocus, coach?.coachId || null, passwordHash);
+
+    const loginUrl = new URL('/login', appUrl);
+    const message = {
+      from: mailSettings?.from || process.env.EMAIL_FROM || 'Forme <no-reply@forme.test>',
+      to: email,
+      subject: 'Your Forme account and temporary password',
+      text: `Hi ${fullName},\n\nThanks for finding your fit with Forme. Your account has been created.\n\nLog in here: ${loginUrl.href}\nEmail: ${email}\nTemporary password: ${tempPassword}\n\nYou will be asked to choose a new password the first time you log in. Your account status is Lead until then.\n\nIf you didn’t request this, you can ignore this email.`,
+    };
+    const logEmail = (status, errorMessage = null) => db.prepare(`
+      INSERT INTO email_log (user_id, recipient, sender, subject, body_text, status, error)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(userId, message.to, message.from, message.subject, message.text, status, errorMessage);
+
+    if (mailSettings) {
+      try {
+        await mailSettings.transport.sendMail(message);
+        logEmail('sent');
+      } catch (error) {
+        logEmail('failed', String(error.message || error).slice(0, 500));
+        db.prepare('DELETE FROM users WHERE user_id = ?').run(userId);
+        throw error;
+      }
+    } else {
+      logEmail('not_sent_delivery_disabled');
+      console.log(`Email delivery disabled. Logged account email for ${email}. View it at GET /api/emails.`);
+    }
 
     return res.status(201).json({
       user: { userId, fullName, email, fitnessFocus },
@@ -246,8 +446,309 @@ app.post('/api/intake', (req, res) => {
     if (error.code === 'SQLITE_CONSTRAINT_UNIQUE') {
       return res.status(409).json({ error: 'That email already has an intake profile.' });
     }
-    console.error('Could not save intake submission:', error);
-    return res.status(500).json({ error: 'We couldn’t save your intake. Please try again.' });
+    console.error('Could not complete intake or send account setup email:', error);
+    return res.status(500).json({ error: 'We couldn’t complete your intake. Please try again.' });
+  }
+});
+
+app.post('/api/account/setup', async (req, res) => {
+  const token = typeof req.body?.token === 'string' ? req.body.token : '';
+  const password = typeof req.body?.password === 'string' ? req.body.password : '';
+  if (!token || token.length > 256) {
+    return res.status(400).json({ error: 'This account setup link is invalid or has expired.' });
+  }
+  if (password.length < 12 || password.length > 128) {
+    return res.status(400).json({ error: 'Choose a password between 12 and 128 characters.' });
+  }
+
+  try {
+    const tokenHash = hashSetupToken(token);
+    const setupToken = db.prepare(`
+      SELECT user_id AS userId
+      FROM account_setup_tokens
+      WHERE token_hash = ? AND used_at IS NULL AND expires_at > ?
+    `).get(tokenHash, Date.now());
+    if (!setupToken) {
+      return res.status(400).json({ error: 'This account setup link is invalid or has expired.' });
+    }
+
+    const salt = randomBytes(16).toString('hex');
+    const derivedKey = await scrypt(password, salt, 64);
+    const passwordHash = `scrypt$${salt}$${derivedKey.toString('hex')}`;
+    const setupAccount = db.transaction(() => {
+      const claimedToken = db.prepare(`
+        UPDATE account_setup_tokens SET used_at = ?
+        WHERE token_hash = ? AND used_at IS NULL AND expires_at > ?
+      `).run(Date.now(), tokenHash, Date.now());
+      if (claimedToken.changes !== 1) return false;
+      db.prepare("UPDATE users SET password_hash = ?, must_change_password = 0, account_status = CASE WHEN account_status = 'Lead' THEN 'Active' ELSE account_status END WHERE user_id = ?").run(passwordHash, setupToken.userId);
+      return true;
+    });
+    if (!setupAccount()) {
+      return res.status(400).json({ error: 'This account setup link is invalid or has expired.' });
+    }
+    return res.json({ message: 'Your password has been set. Your account is now Active.' });
+  } catch (error) {
+    console.error('Could not complete account setup:', error);
+    return res.status(500).json({ error: 'We couldn’t set your password. Please try again.' });
+  }
+});
+
+const loginAttempts = new Map();
+
+function isLoginThrottled(key) {
+  const now = Date.now();
+  const recent = (loginAttempts.get(key) || []).filter((time) => now - time < 15 * 60 * 1000);
+  loginAttempts.set(key, recent);
+  return recent.length >= 10;
+}
+
+function loadClient(userId) {
+  const user = db.prepare(`
+    SELECT user_id AS userId, full_name AS fullName, email, fitness_focus AS fitnessFocus,
+      account_status AS accountStatus, must_change_password AS mustChangePassword,
+      assigned_coach_id AS coachId
+    FROM users WHERE user_id = ?
+  `).get(userId);
+  if (!user) return null;
+  return { ...user, mustChangePassword: Boolean(user.mustChangePassword) };
+}
+
+function requireClient(req, res, next) {
+  const authorization = req.get('authorization') || '';
+  const token = authorization.startsWith('Bearer ') ? authorization.slice(7) : '';
+  const session = token && db.prepare(
+    'SELECT user_id AS userId FROM client_sessions WHERE token_hash = ? AND expires_at > ?'
+  ).get(hashSetupToken(token), Date.now());
+  const client = session && loadClient(session.userId);
+  if (!client) return res.status(401).json({ error: 'Please log in to continue.' });
+  req.client = client;
+  req.clientToken = token;
+  return next();
+}
+
+app.post('/api/auth/login', async (req, res) => {
+  const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+  const password = typeof req.body?.password === 'string' ? req.body.password : '';
+  const throttleKey = `${req.ip}|${email}`;
+  if (isLoginThrottled(throttleKey)) {
+    return res.status(429).json({ error: 'Too many attempts. Please try again in a few minutes.' });
+  }
+  try {
+    const row = email && password.length <= 128
+      ? db.prepare('SELECT user_id AS userId, password_hash AS passwordHash FROM users WHERE email = ?').get(email)
+      : null;
+    const valid = row ? await verifyPassword(password, row.passwordHash) : false;
+    if (!valid) {
+      loginAttempts.get(throttleKey).push(Date.now());
+      return res.status(401).json({ error: 'That email or password is not correct.' });
+    }
+    loginAttempts.delete(throttleKey);
+    const token = randomBytes(32).toString('base64url');
+    db.prepare('DELETE FROM client_sessions WHERE expires_at <= ?').run(Date.now());
+    db.prepare('INSERT INTO client_sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)')
+      .run(hashSetupToken(token), row.userId, Date.now() + clientSessionLifetimeMs);
+    return res.json({ token, user: loadClient(row.userId) });
+  } catch (error) {
+    console.error('Could not log in:', error);
+    return res.status(500).json({ error: 'We couldn’t log you in. Please try again.' });
+  }
+});
+
+app.post('/api/auth/logout', requireClient, (req, res) => {
+  db.prepare('DELETE FROM client_sessions WHERE token_hash = ?').run(hashSetupToken(req.clientToken));
+  return res.json({ message: 'Logged out.' });
+});
+
+app.post('/api/auth/change-password', requireClient, async (req, res) => {
+  const currentPassword = typeof req.body?.currentPassword === 'string' ? req.body.currentPassword : '';
+  const newPassword = typeof req.body?.newPassword === 'string' ? req.body.newPassword : '';
+  if (newPassword.length < 12 || newPassword.length > 128) {
+    return res.status(400).json({ error: 'Choose a password between 12 and 128 characters.' });
+  }
+  if (newPassword === currentPassword) {
+    return res.status(400).json({ error: 'Your new password must be different from your temporary password.' });
+  }
+  try {
+    const row = db.prepare('SELECT password_hash AS passwordHash FROM users WHERE user_id = ?').get(req.client.userId);
+    if (currentPassword.length > 128 || !(await verifyPassword(currentPassword, row?.passwordHash))) {
+      return res.status(400).json({ error: 'Your current password is not correct.' });
+    }
+    const passwordHash = await hashPassword(newPassword);
+    db.prepare(`
+      UPDATE users
+      SET password_hash = ?, must_change_password = 0,
+        account_status = CASE WHEN must_change_password = 1 THEN 'Active' ELSE account_status END
+      WHERE user_id = ?
+    `).run(passwordHash, req.client.userId);
+    return res.json({ user: loadClient(req.client.userId) });
+  } catch (error) {
+    console.error('Could not change password:', error);
+    return res.status(500).json({ error: 'We couldn’t change your password. Please try again.' });
+  }
+});
+
+function listClientBookings(userId) {
+  return db.prepare(`
+    SELECT b.booking_id AS bookingId, b.coach_id AS coachId, c.full_name AS coachName,
+      b.requested_datetime AS requestedDatetime, b.status, b.created_at AS createdAt
+    FROM bookings b JOIN coaches c ON c.coach_id = b.coach_id
+    WHERE b.user_id = ? ORDER BY b.requested_datetime DESC
+  `).all(userId);
+}
+
+app.get('/api/me', requireClient, (req, res) => {
+  const trainers = db.prepare(
+    'SELECT coach_id AS coachId, full_name AS fullName, specialties, style, environment FROM coaches WHERE is_active = 1 ORDER BY full_name COLLATE NOCASE'
+  ).all();
+  return res.json({ user: req.client, trainers, bookings: listClientBookings(req.client.userId) });
+});
+
+app.put('/api/me/coach', requireClient, (req, res) => {
+  const coachId = typeof req.body?.coachId === 'string' ? req.body.coachId : '';
+  const coach = db.prepare('SELECT coach_id AS coachId FROM coaches WHERE coach_id = ? AND is_active = 1').get(coachId);
+  if (!coach) return res.status(400).json({ error: 'Please choose an available trainer.' });
+  db.prepare('UPDATE users SET assigned_coach_id = ? WHERE user_id = ?').run(coach.coachId, req.client.userId);
+  return res.json({ user: loadClient(req.client.userId) });
+});
+
+app.post('/api/me/bookings', requireClient, async (req, res) => {
+  if (req.client.mustChangePassword) {
+    return res.status(403).json({ error: 'Please change your temporary password first.' });
+  }
+  const coachId = typeof req.body?.coachId === 'string' ? req.body.coachId : '';
+  const requested = new Date(typeof req.body?.datetime === 'string' ? req.body.datetime : '');
+  const coach = db.prepare(
+    'SELECT coach_id AS coachId, full_name AS fullName FROM coaches WHERE coach_id = ? AND is_active = 1'
+  ).get(coachId);
+  if (!coach) return res.status(400).json({ error: 'Please choose an available trainer.' });
+  if (Number.isNaN(requested.getTime()) || requested.getTime() <= Date.now()) {
+    return res.status(400).json({ error: 'Please choose a date and time in the future.' });
+  }
+  if (requested.getTime() > Date.now() + 365 * 24 * 60 * 60 * 1000) {
+    return res.status(400).json({ error: 'Please choose a date within the next year.' });
+  }
+
+  const bookingId = `BKG-${randomUUID()}`;
+  const requestedDatetime = requested.toISOString();
+  db.transaction(() => {
+    db.prepare(`
+      INSERT INTO bookings (booking_id, user_id, coach_id, requested_datetime, status)
+      VALUES (?, ?, ?, ?, 'Pending')
+    `).run(bookingId, req.client.userId, coach.coachId, requestedDatetime);
+    db.prepare('UPDATE users SET assigned_coach_id = ? WHERE user_id = ?').run(coach.coachId, req.client.userId);
+  })();
+
+  const emailSent = await sendLoggedEmail({
+    userId: req.client.userId,
+    to: bookingNotifyEmail,
+    subject: `New session booking request from ${req.client.fullName}`,
+    text: `A client has requested a session.\n\nClient: ${req.client.fullName} (${req.client.email})\nFitness focus: ${req.client.fitnessFocus}\nTrainer: ${coach.fullName}\nRequested time: ${requestedDatetime} (UTC)\nStatus: Pending\nBooking ID: ${bookingId}`,
+  });
+  return res.status(201).json({
+    emailSent,
+    user: loadClient(req.client.userId),
+    bookings: listClientBookings(req.client.userId),
+  });
+});
+
+function buildPortalData() {
+  const clients = db.prepare(`
+    SELECT u.user_id AS userId, u.full_name AS fullName, u.email, u.fitness_focus AS fitnessFocus,
+      u.account_status AS accountStatus, c.full_name AS coachName,
+      COALESCE(SUM(CASE WHEN b.status = 'Complete' THEN b.amount END), 0) AS spentSoFar,
+      COALESCE(SUM(CASE WHEN b.status = 'Billed' THEN b.amount END), 0) AS outstanding,
+      COALESCE(SUM(CASE WHEN b.status = 'Confirmed' THEN b.amount END), 0) AS upcomingConfirmed
+    FROM users u
+    LEFT JOIN coaches c ON c.coach_id = u.assigned_coach_id
+    LEFT JOIN bookings b ON b.user_id = u.user_id
+    WHERE u.account_status = 'Active'
+    GROUP BY u.user_id
+    ORDER BY u.full_name COLLATE NOCASE
+  `).all();
+  const bookings = db.prepare(`
+    SELECT b.booking_id AS bookingId, b.user_id AS userId, u.full_name AS clientName, u.email AS clientEmail,
+      b.coach_id AS coachId, c.full_name AS coachName, b.requested_datetime AS requestedDatetime,
+      b.status, b.amount, c.hourly_rate AS hourlyRate
+    FROM bookings b
+    JOIN users u ON u.user_id = b.user_id
+    JOIN coaches c ON c.coach_id = b.coach_id
+    ORDER BY b.requested_datetime DESC
+  `).all();
+  return { clients, bookings };
+}
+
+app.get('/api/portal', (req, res) => {
+  if (!isAdminAuthorized(req)) {
+    return res.status(401).json({ error: 'A valid admin token is required.' });
+  }
+  try {
+    return res.json(buildPortalData());
+  } catch (error) {
+    console.error('Could not load trainer portal:', error);
+    return res.status(500).json({ error: 'We couldn’t load the trainer portal.' });
+  }
+});
+
+app.put('/api/portal/bookings/:bookingId', async (req, res) => {
+  if (!isAdminAuthorized(req)) {
+    return res.status(401).json({ error: 'A valid admin token is required.' });
+  }
+  const status = req.body?.status;
+  // Each status can only be reached from one previous status.
+  const allowedFrom = { Confirmed: 'Pending', Rejected: 'Pending', Billed: 'Confirmed', Complete: 'Billed' };
+  if (!Object.hasOwn(allowedFrom, status)) {
+    return res.status(400).json({ error: 'Status must be Confirmed, Rejected, Billed or Complete.' });
+  }
+  try {
+    const booking = db.prepare(`
+      SELECT b.booking_id AS bookingId, b.user_id AS userId, b.requested_datetime AS requestedDatetime,
+        b.amount AS amount, u.full_name AS clientName, u.email AS clientEmail,
+        c.full_name AS coachName, c.hourly_rate AS hourlyRate
+      FROM bookings b
+      JOIN users u ON u.user_id = b.user_id
+      JOIN coaches c ON c.coach_id = b.coach_id
+      WHERE b.booking_id = ?
+    `).get(req.params.bookingId);
+    if (!booking) return res.status(404).json({ error: 'Booking not found.' });
+
+    const amount = status === 'Confirmed' ? booking.hourlyRate : status === 'Rejected' ? 0 : booking.amount;
+    const updated = db.prepare(
+      'UPDATE bookings SET status = ?, amount = ? WHERE booking_id = ? AND status = ?'
+    ).run(status, amount, booking.bookingId, allowedFrom[status]);
+    if (updated.changes !== 1) {
+      return res.status(409).json({ error: `Only ${allowedFrom[status].toLowerCase()} bookings can be set to ${status.toLowerCase()}.` });
+    }
+
+    const when = new Date(booking.requestedDatetime).toUTCString();
+    const price = `$${Number(amount).toFixed(2)}`;
+    const emails = {
+      Confirmed: {
+        subject: 'Your Forme session is confirmed',
+        text: `Hi ${booking.clientName},\n\nGood news! Your session with ${booking.coachName} on ${when} has been confirmed.\n\nSession price: ${price}\n\nSee you there,\nThe Forme team`,
+      },
+      Rejected: {
+        subject: 'Your Forme session request was declined',
+        text: `Hi ${booking.clientName},\n\nUnfortunately ${booking.coachName} can’t take your session request for ${when}. Please log in and choose another date, time or trainer.\n\nThe Forme team`,
+      },
+      Billed: {
+        subject: `Your Forme session invoice: ${price}`,
+        text: `Hi ${booking.clientName},\n\nThanks for training with ${booking.coachName} on ${when}.\n\nAmount due: ${price}\nBooking ID: ${booking.bookingId}\n\nPlease arrange payment. We’ll email you again once we receive it.\n\nThe Forme team`,
+      },
+      Complete: {
+        subject: 'Payment received. Thank you!',
+        text: `Hi ${booking.clientName},\n\nWe’ve received your payment of ${price} for your session with ${booking.coachName} on ${when}. Thank you!\n\nThe Forme team`,
+      },
+    };
+    const emailSent = await sendLoggedEmail({
+      userId: booking.userId,
+      to: booking.clientEmail,
+      ...emails[status],
+    });
+    return res.json({ emailSent, ...buildPortalData() });
+  } catch (error) {
+    console.error('Could not update booking:', error);
+    return res.status(500).json({ error: 'We couldn’t update the booking. Please try again.' });
   }
 });
 
@@ -264,6 +765,23 @@ app.get('/api/waitlist', (req, res) => {
   } catch (error) {
     console.error('Could not read waitlist:', error);
     return res.status(500).json({ error: 'We couldn?t load the waitlist.' });
+  }
+});
+
+app.get('/api/emails', (req, res) => {
+  if (!isAdminAuthorized(req)) {
+    return res.status(401).json({ error: 'A valid admin token is required.' });
+  }
+  try {
+    const emails = db.prepare(`
+      SELECT email_id AS emailId, user_id AS userId, recipient, sender, subject,
+        body_text AS bodyText, status, error, created_at AS createdAt
+      FROM email_log ORDER BY email_id DESC LIMIT 200
+    `).all();
+    return res.json({ emails });
+  } catch (error) {
+    console.error('Could not read email log:', error);
+    return res.status(500).json({ error: 'We couldn’t load the email log.' });
   }
 });
 

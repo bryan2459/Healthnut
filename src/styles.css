@@ -159,6 +159,16 @@ h1, h2, h3, p { margin-top: 0; }
 .intake-form label:not(:first-child) { margin-top: 17px; }
 .intake-form input { width: 100%; padding: 13px 14px; border: 1px solid #e2e4dc; border-radius: 4px; outline: none; background: #fff; font-size: 13px; }
 .intake-form input:focus { border-color: #89976a; box-shadow: 0 0 0 3px #89976a1a; }
+.intake-form select { width: 100%; padding: 13px 14px; border: 1px solid #e2e4dc; border-radius: 4px; background: #fff; font-size: 13px; }
+.client-dashboard h2 { margin: 34px 0 6px; font: 600 19px 'Manrope',sans-serif; }
+.client-dashboard .intake-form { max-width: 440px; margin-top: 24px; }
+.client-dashboard .intake-form h2 { margin: 0 0 14px; }
+.nav-links a.nav-login { padding: 8px 16px; border: 1px solid #89976a; border-radius: 999px; }
+.admin-nav { display: flex; gap: 8px; margin: 22px 0 6px; }
+.admin-nav button { padding: 9px 16px; border: 1px solid var(--line); border-radius: 999px; background: #fff; font-size: 12px; font-weight: 600; cursor: pointer; }
+.admin-nav button.active { background: #2f4733; border-color: #2f4733; color: #fff; }
+.admin-panel details ul { margin: 8px 0 0; padding-left: 16px; }
+.admin-panel small { color: var(--muted); font-weight: 400; }
 .intake-form .intake-next { align-self: flex-start; margin-top: 23px; }
 .intake-error { margin: 14px 0 0; color: #ae4844; font-size: 12px; }
 .intake-complete { text-align: center; }
