@@ -6,6 +6,12 @@ import {
 } from 'lucide-react';
 import './styles.css';
 
+const fallbackCoachImages = {
+  marcus: '/images/trainer-marcus.jpg',
+  elena: '/images/trainer-elena.jpg',
+  kai: '/images/trainer-kai.jpg',
+};
+
 function Header() {
   const [menuOpen, setMenuOpen] = useState(false);
   return (
@@ -24,13 +30,11 @@ function Header() {
 }
 
 function TrainerCard({ trainer, index }) {
-  const initials = trainer.fullName.split(/\s+/).map((part) => part[0]).slice(0, 2).join('');
   const color = ['lavender', 'peach', 'sage', 'butter'][index % 4];
   return (
     <article className={`trainer-card card-${color}`} style={{ '--card-index': index }}>
       <div className="trainer-photo-wrap">
-        <div className="trainer-photo-placeholder" aria-hidden="true">{initials}</div>
-        {trainer.imageUrl && <img className="trainer-photo" src={trainer.imageUrl} alt={`${trainer.fullName}, personal trainer`} loading="lazy" onError={(event) => { event.currentTarget.hidden = true; }} />}
+        <CoachPicture key={`${trainer.fullName}-${trainer.imageUrl}`} imageUrl={trainer.imageUrl} name={trainer.fullName} variant="trainer" />
         <span className="trainer-location">{trainer.environment}</span>
         <span className="session-label">{trainer.style || 'Personal trainer'}</span>
       </div>
@@ -43,6 +47,43 @@ function TrainerCard({ trainer, index }) {
         <div className="trainer-footer"><span className="rate"><strong>${Number(trainer.hourlyRate).toFixed(0)}</strong> <span>/ hour</span></span><a href="#waitlist" className="profile-link">Meet {trainer.fullName.split(' ')[0]} <ArrowRight size={15} /></a></div>
       </div>
     </article>
+  );
+}
+
+function CoachPicture({ imageUrl, name, variant = 'roster' }) {
+  const [failedUrl, setFailedUrl] = useState('');
+  const initials = name.trim().slice(0, 1).toUpperCase();
+  const fallbackImageUrl = fallbackCoachImages[name.trim().toLowerCase()] || '';
+  const displayImageUrl = imageUrl && failedUrl !== imageUrl
+    ? imageUrl
+    : fallbackImageUrl && failedUrl !== fallbackImageUrl
+      ? fallbackImageUrl
+      : '';
+  const preview = variant === 'preview';
+  const trainer = variant === 'trainer';
+  const placeholderClass = trainer
+    ? 'trainer-photo-placeholder'
+    : preview
+      ? 'coach-preview-placeholder'
+      : 'coach-roster-placeholder';
+  const imageClass = trainer
+    ? 'trainer-photo'
+    : preview
+      ? 'coach-preview-image'
+      : 'coach-roster-image';
+
+  return (
+    <>
+      {(trainer || !displayImageUrl) && <span className={placeholderClass} aria-hidden="true">{initials}</span>}
+      {displayImageUrl && <img
+        className={imageClass}
+        src={displayImageUrl}
+        alt={`${name}${trainer ? ', personal trainer' : ''}`}
+        loading={preview ? undefined : 'lazy'}
+        onError={() => setFailedUrl(displayImageUrl)}
+      />}
+      {preview && imageUrl && failedUrl === imageUrl && <p className="coach-image-error" role="status">Couldn’t load this URL; showing a stock photo when available.</p>}
+    </>
   );
 }
 
@@ -401,9 +442,9 @@ function AdminDashboard() {
               <input id="coach-environment" required maxLength="80" placeholder="Gym" value={coachForm.environment} onChange={(event) => setCoachForm({ ...coachForm, environment: event.target.value })} />
               <label htmlFor="coach-rate">Rate per hour (USD)</label>
               <input id="coach-rate" type="number" required min="0" max="100000" step="0.01" placeholder="85" value={coachForm.hourlyRate} onChange={(event) => setCoachForm({ ...coachForm, hourlyRate: event.target.value })} />
-              <label htmlFor="coach-image">Coach picture URL <span>Optional · use an https:// image link</span></label>
+              <label htmlFor="coach-image">Coach picture URL <span>Optional · direct link to a publicly accessible image</span></label>
               <input id="coach-image" type="url" maxLength="2048" placeholder="https://example.com/coach-photo.jpg" value={coachForm.imageUrl} onChange={(event) => setCoachForm({ ...coachForm, imageUrl: event.target.value })} />
-              {coachForm.imageUrl && <div className="coach-image-preview"><img src={coachForm.imageUrl} alt="Coach picture preview" onError={(event) => { event.currentTarget.hidden = true; }} onLoad={(event) => { event.currentTarget.hidden = false; }} /></div>}
+              {coachForm.imageUrl && <div className="coach-image-preview"><CoachPicture key={`${coachForm.fullName}-${coachForm.imageUrl}`} imageUrl={coachForm.imageUrl} name={coachForm.fullName || 'Coach'} variant="preview" /></div>}
               <div className="trainer-form-actions">
                 <button className="button button-dark" disabled={saving}>{saving ? 'Saving...' : editingCoachId ? 'Save changes' : 'Add trainer'} <ArrowRight size={16} /></button>
                 {editingCoachId && <button className="button button-outline" type="button" onClick={cancelCoachEdit} disabled={saving}>Cancel</button>}
@@ -413,7 +454,7 @@ function AdminDashboard() {
           </section>
           <div className="entries">
             <div className="entries-heading"><h2>Trainer roster</h2><span>{coaches.length} total</span></div>
-            {coaches.length === 0 ? <p className="empty-state">No trainers added yet.</p> : <div className="table-scroll"><table><thead><tr><th>Picture</th><th>Name</th><th>Specialty</th><th>Rate / hour</th><th>Style</th><th>Environment</th><th>Actions</th></tr></thead><tbody>{coaches.map((coach) => <tr key={coach.coachId}><td>{coach.imageUrl ? <img className="coach-roster-image" src={coach.imageUrl} alt={`${coach.fullName}`} loading="lazy" /> : <span className="coach-roster-placeholder">{coach.fullName.slice(0, 1)}</span>}</td><td>{coach.fullName}</td><td>{coach.specialties}</td><td>${Number(coach.hourlyRate).toFixed(2)}</td><td>{coach.style}</td><td>{coach.environment}</td><td><div className="coach-actions"><button type="button" onClick={() => editCoach(coach)} aria-label={`Edit ${coach.fullName}`} disabled={Boolean(deletingCoachId)}><Pencil size={14} />Edit</button><button type="button" className="delete-coach" onClick={() => deleteCoach(coach)} aria-label={`Delete ${coach.fullName}`} disabled={Boolean(deletingCoachId)}><Trash2 size={14} />{deletingCoachId === coach.coachId ? 'Deleting...' : 'Delete'}</button></div></td></tr>)}</tbody></table></div>}
+            {coaches.length === 0 ? <p className="empty-state">No trainers added yet.</p> : <div className="table-scroll"><table><thead><tr><th>Picture</th><th>Name</th><th>Specialty</th><th>Rate / hour</th><th>Style</th><th>Environment</th><th>Actions</th></tr></thead><tbody>{coaches.map((coach) => <tr key={coach.coachId}><td><CoachPicture key={`${coach.fullName}-${coach.imageUrl}`} imageUrl={coach.imageUrl} name={coach.fullName} /></td><td>{coach.fullName}</td><td>{coach.specialties}</td><td>${Number(coach.hourlyRate).toFixed(2)}</td><td>{coach.style}</td><td>{coach.environment}</td><td><div className="coach-actions"><button type="button" onClick={() => editCoach(coach)} aria-label={`Edit ${coach.fullName}`} disabled={Boolean(deletingCoachId)}><Pencil size={14} />Edit</button><button type="button" className="delete-coach" onClick={() => deleteCoach(coach)} aria-label={`Delete ${coach.fullName}`} disabled={Boolean(deletingCoachId)}><Trash2 size={14} />{deletingCoachId === coach.coachId ? 'Deleting...' : 'Delete'}</button></div></td></tr>)}</tbody></table></div>}
           </div>
           <div className="entries"><div className="entries-heading"><h2>Waitlist responses</h2><span>{entries.length} total</span></div>{entries.length === 0 ? <p className="empty-state">No signups yet.</p> : <div className="table-scroll"><table><thead><tr><th>Name</th><th>Email</th><th>Goal</th><th>Joined</th></tr></thead><tbody>{entries.map((entry) => <tr key={entry.id}><td>{entry.name}</td><td>{entry.email}</td><td>{entry.goal || '?'}</td><td>{new Date(`${entry.createdAt.replace(' ', 'T')}Z`).toLocaleString()}</td></tr>)}</tbody></table></div>}</div>
           <section className="entries">

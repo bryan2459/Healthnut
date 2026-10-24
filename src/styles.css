@@ -114,7 +114,9 @@ h1, h2, h3, p { margin-top: 0; }
 .user-add-button { display: inline-flex; align-items: center; gap: 8px; padding: 9px 12px; font-size: 10px; }
 .trainer-form-actions .button { margin-top: 0; }
 .coach-image-preview { grid-column: 1 / -1; min-height: 80px; }
-.coach-image-preview img { display: block; width: 88px; height: 88px; border-radius: 50%; object-fit: cover; border: 1px solid var(--line); }
+.coach-image-preview img, .coach-preview-placeholder { display: block; width: 88px; height: 88px; border-radius: 50%; object-fit: cover; border: 1px solid var(--line); }
+.coach-preview-placeholder { display: grid; place-items: center; background: #eff2e5; color: #65764d; font: 600 24px 'Manrope', sans-serif; }
+.coach-image-error { margin: 8px 0 0; color: #ae4844; font-size: 11px; }
 .coach-roster-image, .coach-roster-placeholder { display: block; width: 42px; height: 42px; border-radius: 50%; object-fit: cover; }
 .coach-roster-placeholder { display: grid; place-items: center; background: #eff2e5; color: #65764d; font: 600 15px 'Manrope', sans-serif; }
 .button-outline { padding: 10px 16px; border: 1px solid var(--line); border-radius: 2px; background: white; color: var(--ink); font-size: 11px; cursor: pointer; }
