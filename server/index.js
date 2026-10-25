@@ -48,6 +48,7 @@ db.exec(`
     user_id TEXT PRIMARY KEY,
     full_name TEXT NOT NULL,
     email TEXT NOT NULL COLLATE NOCASE UNIQUE,
+    mobile_number TEXT NOT NULL DEFAULT '',
     fitness_focus TEXT NOT NULL,
     account_status TEXT DEFAULT 'Lead',
     password_hash TEXT,
@@ -122,6 +123,9 @@ if (!userColumns.has('password_hash')) {
 
 if (!userColumns.has('must_change_password')) {
   db.exec('ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0');
+}
+if (!userColumns.has('mobile_number')) {
+  db.exec("ALTER TABLE users ADD COLUMN mobile_number TEXT NOT NULL DEFAULT ''");
 }
 
 const bookingColumns = new Set(db.pragma('table_info(bookings)').map((column) => column.name));
@@ -222,6 +226,11 @@ function isValidImageUrl(value) {
   } catch {
     return false;
   }
+}
+
+function isValidMobileNumber(value) {
+  const digits = value.replace(/\D/g, '');
+  return value.length <= 25 && /^\+?[0-9\s().-]+$/.test(value) && digits.length >= 7 && digits.length <= 15;
 }
 
 app.post('/api/waitlist', (req, res) => {
@@ -369,6 +378,7 @@ function matchCoach(fitnessFocus) {
 app.post('/api/intake', async (req, res) => {
   const fullName = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
   const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+  const mobileNumber = typeof req.body?.mobileNumber === 'string' ? req.body.mobileNumber.trim() : '';
   const fitnessFocus = typeof req.body?.goal === 'string' ? req.body.goal.trim() : '';
 
   if (fullName.length < 2 || fullName.length > 80) {
@@ -376,6 +386,9 @@ app.post('/api/intake', async (req, res) => {
   }
   if (email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     return res.status(400).json({ error: 'Please enter a valid email address.' });
+  }
+  if (!isValidMobileNumber(mobileNumber)) {
+    return res.status(400).json({ error: 'Please enter a valid mobile number with 7 to 15 digits.' });
   }
   if (!Object.hasOwn(focusKeywords, fitnessFocus)) {
     return res.status(400).json({ error: 'Please select a valid fitness focus.' });
@@ -408,9 +421,9 @@ app.post('/api/intake', async (req, res) => {
   try {
     const passwordHash = await hashPassword(tempPassword);
     db.prepare(`
-      INSERT INTO users (user_id, full_name, email, fitness_focus, account_status, assigned_coach_id, password_hash, must_change_password)
-      VALUES (?, ?, ?, ?, 'Lead', ?, ?, 1)
-    `).run(userId, fullName, email, fitnessFocus, coach?.coachId || null, passwordHash);
+      INSERT INTO users (user_id, full_name, email, mobile_number, fitness_focus, account_status, assigned_coach_id, password_hash, must_change_password)
+      VALUES (?, ?, ?, ?, ?, 'Lead', ?, ?, 1)
+    `).run(userId, fullName, email, mobileNumber, fitnessFocus, coach?.coachId || null, passwordHash);
 
     const loginUrl = new URL('/login', appUrl);
     const message = {
@@ -439,7 +452,7 @@ app.post('/api/intake', async (req, res) => {
     }
 
     return res.status(201).json({
-      user: { userId, fullName, email, fitnessFocus },
+      user: { userId, fullName, email, mobileNumber, fitnessFocus },
       match: coach ? { coachId: coach.coachId, fullName: coach.fullName, specialties: coach.specialties } : null,
     });
   } catch (error) {
@@ -505,7 +518,7 @@ function isLoginThrottled(key) {
 
 function loadClient(userId) {
   const user = db.prepare(`
-    SELECT user_id AS userId, full_name AS fullName, email, fitness_focus AS fitnessFocus,
+    SELECT user_id AS userId, full_name AS fullName, email, mobile_number AS mobileNumber, fitness_focus AS fitnessFocus,
       account_status AS accountStatus, must_change_password AS mustChangePassword,
       assigned_coach_id AS coachId
     FROM users WHERE user_id = ?
@@ -643,7 +656,7 @@ app.post('/api/me/bookings', requireClient, async (req, res) => {
     userId: req.client.userId,
     to: bookingNotifyEmail,
     subject: `New session booking request from ${req.client.fullName}`,
-    text: `A client has requested a session.\n\nClient: ${req.client.fullName} (${req.client.email})\nFitness focus: ${req.client.fitnessFocus}\nTrainer: ${coach.fullName}\nRequested time: ${requestedDatetime} (UTC)\nStatus: Pending\nBooking ID: ${bookingId}`,
+    text: `A client has requested a session.\n\nClient: ${req.client.fullName} (${req.client.email})\nMobile: ${req.client.mobileNumber}\nFitness focus: ${req.client.fitnessFocus}\nTrainer: ${coach.fullName}\nRequested time: ${requestedDatetime} (UTC)\nStatus: Pending\nBooking ID: ${bookingId}`,
   });
   return res.status(201).json({
     emailSent,
@@ -654,7 +667,8 @@ app.post('/api/me/bookings', requireClient, async (req, res) => {
 
 function buildPortalData() {
   const clients = db.prepare(`
-    SELECT u.user_id AS userId, u.full_name AS fullName, u.email, u.fitness_focus AS fitnessFocus,
+    SELECT u.user_id AS userId, u.full_name AS fullName, u.email,
+      u.mobile_number AS mobileNumber, u.fitness_focus AS fitnessFocus,
       u.account_status AS accountStatus, c.full_name AS coachName,
       COALESCE(SUM(CASE WHEN b.status = 'Complete' THEN b.amount END), 0) AS spentSoFar,
       COALESCE(SUM(CASE WHEN b.status = 'Billed' THEN b.amount END), 0) AS outstanding,
@@ -668,6 +682,7 @@ function buildPortalData() {
   `).all();
   const bookings = db.prepare(`
     SELECT b.booking_id AS bookingId, b.user_id AS userId, u.full_name AS clientName, u.email AS clientEmail,
+      u.mobile_number AS clientMobileNumber,
       b.coach_id AS coachId, c.full_name AS coachName, b.requested_datetime AS requestedDatetime,
       b.status, b.amount, c.hourly_rate AS hourlyRate
     FROM bookings b
@@ -711,6 +726,10 @@ app.put('/api/portal/bookings/:bookingId', async (req, res) => {
       WHERE b.booking_id = ?
     `).get(req.params.bookingId);
     if (!booking) return res.status(404).json({ error: 'Booking not found.' });
+
+    if (['Billed', 'Complete'].includes(status) && new Date(booking.requestedDatetime).getTime() > Date.now()) {
+      return res.status(400).json({ error: 'This session hasn’t taken place yet. You can bill or mark it paid after its date and time has passed.' });
+    }
 
     const amount = status === 'Confirmed' ? booking.hourlyRate : status === 'Rejected' ? 0 : booking.amount;
     const updated = db.prepare(
@@ -793,6 +812,7 @@ app.get('/api/users', (req, res) => {
   try {
     const users = db.prepare(`
       SELECT u.user_id AS userId, u.full_name AS fullName, u.email,
+        u.mobile_number AS mobileNumber,
         u.fitness_focus AS fitnessFocus, u.account_status AS accountStatus,
         u.created_at AS createdAt, c.coach_id AS coachId, c.full_name AS coachName
       FROM users u
@@ -809,6 +829,7 @@ app.get('/api/users', (req, res) => {
 function parseUserInput(body, { requireCoachSelection = false } = {}) {
   const fullName = typeof body?.fullName === 'string' ? body.fullName.trim() : '';
   const email = typeof body?.email === 'string' ? body.email.trim().toLowerCase() : '';
+  const mobileNumber = typeof body?.mobileNumber === 'string' ? body.mobileNumber.trim() : '';
   const fitnessFocus = typeof body?.fitnessFocus === 'string' ? body.fitnessFocus.trim() : '';
   const accountStatus = typeof body?.accountStatus === 'string' ? body.accountStatus.trim() : 'Lead';
   const coachId = body?.coachId;
@@ -818,6 +839,9 @@ function parseUserInput(body, { requireCoachSelection = false } = {}) {
   }
   if (email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     return { error: 'Enter a valid email address.' };
+  }
+  if (!isValidMobileNumber(mobileNumber)) {
+    return { error: 'Enter a valid mobile number with 7 to 15 digits.' };
   }
   if (!Object.hasOwn(focusKeywords, fitnessFocus)) {
     return { error: 'Select a valid fitness focus.' };
@@ -838,12 +862,13 @@ function parseUserInput(body, { requireCoachSelection = false } = {}) {
     assignedCoachId = coach.coach_id;
   }
 
-  return { fullName, email, fitnessFocus, accountStatus, assignedCoachId };
+  return { fullName, email, mobileNumber, fitnessFocus, accountStatus, assignedCoachId };
 }
 
 function getAdminUser(userId) {
   return db.prepare(`
     SELECT u.user_id AS userId, u.full_name AS fullName, u.email,
+      u.mobile_number AS mobileNumber,
       u.fitness_focus AS fitnessFocus, u.account_status AS accountStatus,
       u.created_at AS createdAt, c.coach_id AS coachId, c.full_name AS coachName
     FROM users u
@@ -863,12 +888,13 @@ app.post('/api/users', (req, res) => {
   try {
     const userId = `USR-${randomUUID()}`;
     db.prepare(`
-      INSERT INTO users (user_id, full_name, email, fitness_focus, account_status, assigned_coach_id)
-      VALUES (?, ?, ?, ?, ?, ?)
+      INSERT INTO users (user_id, full_name, email, mobile_number, fitness_focus, account_status, assigned_coach_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
     `).run(
       userId,
       userInput.fullName,
       userInput.email,
+      userInput.mobileNumber,
       userInput.fitnessFocus,
       userInput.accountStatus,
       userInput.assignedCoachId
@@ -894,11 +920,12 @@ app.put('/api/users/:userId', (req, res) => {
   try {
     const result = db.prepare(`
       UPDATE users
-      SET full_name = ?, email = ?, fitness_focus = ?, account_status = ?, assigned_coach_id = ?
+      SET full_name = ?, email = ?, mobile_number = ?, fitness_focus = ?, account_status = ?, assigned_coach_id = ?
       WHERE user_id = ?
     `).run(
       userInput.fullName,
       userInput.email,
+      userInput.mobileNumber,
       userInput.fitnessFocus,
       userInput.accountStatus,
       userInput.assignedCoachId,

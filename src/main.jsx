@@ -87,6 +87,17 @@ function CoachPicture({ imageUrl, name, variant = 'roster' }) {
   );
 }
 
+function emailDateFromTimestamp(value) {
+  return new Date(`${value.replace(' ', 'T')}Z`);
+}
+
+function localDateKey(date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
 function WaitlistForm() {
   const [form, setForm] = useState({ name: '', email: '', goal: '' });
   const [status, setStatus] = useState({ type: '', message: '' });
@@ -167,6 +178,7 @@ function TrainerPortal({ token }) {
   }
 
   const money = (value) => `$${Number(value).toFixed(2)}`;
+  const hasPassed = (booking) => new Date(booking.requestedDatetime).getTime() <= Date.now();
   const when = (value) => new Date(value).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
   const pending = (data?.bookings || []).filter((booking) => booking.status === 'Pending');
   const billing = (data?.bookings || []).filter((booking) => ['Confirmed', 'Billed'].includes(booking.status))
@@ -181,18 +193,18 @@ function TrainerPortal({ token }) {
       {data && <>
         <section className="entries">
           <div className="entries-heading"><h2>Pending session requests</h2><span>{pending.length} pending</span></div>
-          {pending.length === 0 ? <p className="empty-state">No pending requests.</p> : <div className="table-scroll"><table><thead><tr><th>Client</th><th>Trainer</th><th>Requested time</th><th>Price</th><th>Actions</th></tr></thead><tbody>{pending.map((booking) => <tr key={booking.bookingId}><td>{booking.clientName}<br /><small>{booking.clientEmail}</small></td><td>{booking.coachName}</td><td>{when(booking.requestedDatetime)}</td><td>{money(booking.hourlyRate)}</td><td><div className="coach-actions"><button type="button" onClick={() => decide(booking, 'Confirmed')} disabled={Boolean(updatingId)}><Check size={14} />Confirm</button><button type="button" className="delete-coach" onClick={() => decide(booking, 'Rejected')} disabled={Boolean(updatingId)}><X size={14} />Reject</button></div></td></tr>)}</tbody></table></div>}
+          {pending.length === 0 ? <p className="empty-state">No pending requests.</p> : <div className="table-scroll"><table><thead><tr><th>Client</th><th>Trainer</th><th>Requested time</th><th>Price</th><th>Actions</th></tr></thead><tbody>{pending.map((booking) => <tr key={booking.bookingId}><td>{booking.clientName}<br /><small>{booking.clientEmail}<br />{booking.clientMobileNumber}</small></td><td>{booking.coachName}</td><td>{when(booking.requestedDatetime)}</td><td>{money(booking.hourlyRate)}</td><td><div className="coach-actions"><button type="button" onClick={() => decide(booking, 'Confirmed')} disabled={Boolean(updatingId)}><Check size={14} />Confirm</button><button type="button" className="delete-coach" onClick={() => decide(booking, 'Rejected')} disabled={Boolean(updatingId)}><X size={14} />Reject</button></div></td></tr>)}</tbody></table></div>}
         </section>
         <section className="entries">
           <div className="entries-heading"><h2>Sessions to bill</h2><span>{billing.length} open</span></div>
           <p className="admin-section-description">After a session is completed, click Bill to email the client the cost. When payment arrives, click Mark paid to complete it.</p>
-          {billing.length === 0 ? <p className="empty-state">No confirmed or billed sessions.</p> : <div className="table-scroll"><table><thead><tr><th>Client</th><th>Trainer</th><th>Session time</th><th>Amount</th><th>Status</th><th>Actions</th></tr></thead><tbody>{billing.map((booking) => <tr key={booking.bookingId}><td>{booking.clientName}<br /><small>{booking.clientEmail}</small></td><td>{booking.coachName}</td><td>{when(booking.requestedDatetime)}</td><td>{money(booking.amount)}</td><td>{booking.status}</td><td><div className="coach-actions">{booking.status === 'Confirmed'
-            ? <button type="button" onClick={() => decide(booking, 'Billed')} disabled={Boolean(updatingId)}><Check size={14} />Bill client</button>
-            : <button type="button" onClick={() => decide(booking, 'Complete')} disabled={Boolean(updatingId)}><Check size={14} />Mark paid</button>}</div></td></tr>)}</tbody></table></div>}
+          {billing.length === 0 ? <p className="empty-state">No confirmed or billed sessions.</p> : <div className="table-scroll"><table><thead><tr><th>Client</th><th>Trainer</th><th>Session time</th><th>Amount</th><th>Status</th><th>Actions</th></tr></thead><tbody>{billing.map((booking) => <tr key={booking.bookingId}><td>{booking.clientName}<br /><small>{booking.clientEmail}<br />{booking.clientMobileNumber}</small></td><td>{booking.coachName}</td><td>{when(booking.requestedDatetime)}</td><td>{money(booking.amount)}</td><td>{booking.status}</td><td><div className="coach-actions">{booking.status === 'Confirmed'
+            ? <button type="button" onClick={() => decide(booking, 'Billed')} disabled={Boolean(updatingId) || !hasPassed(booking)} title={hasPassed(booking) ? undefined : 'Available after the session date and time has passed'}><Check size={14} />Bill client</button>
+            : <button type="button" onClick={() => decide(booking, 'Complete')} disabled={Boolean(updatingId) || !hasPassed(booking)} title={hasPassed(booking) ? undefined : 'Available after the session date and time has passed'}><Check size={14} />Mark paid</button>}</div></td></tr>)}</tbody></table></div>}
         </section>
         <section className="entries">
           <div className="entries-heading"><h2>Active clients</h2><span>{data.clients.length} active</span></div>
-          {data.clients.length === 0 ? <p className="empty-state">No active clients yet. Clients become active after their first login.</p> : <div className="table-scroll"><table><thead><tr><th>Client</th><th>Goal</th><th>Trainer</th><th>Spent so far (paid)</th><th>Outstanding (billed)</th><th>Upcoming confirmed</th><th>Booking history</th></tr></thead><tbody>{data.clients.map((client) => <tr key={client.userId}><td>{client.fullName}<br /><small>{client.email}</small></td><td>{client.fitnessFocus}</td><td>{client.coachName || 'None'}</td><td>{money(client.spentSoFar)}</td><td>{money(client.outstanding)}</td><td>{money(client.upcomingConfirmed)}</td><td><details><summary>{bookingsFor(client.userId).length} sessions</summary>{bookingsFor(client.userId).length === 0 ? <p>No sessions yet.</p> : <ul>{bookingsFor(client.userId).map((booking) => <li key={booking.bookingId}>{when(booking.requestedDatetime)} · {booking.coachName} · {booking.status}{['Confirmed', 'Billed', 'Complete'].includes(booking.status) ? ` · ${money(booking.amount)}` : ''}</li>)}</ul>}</details></td></tr>)}</tbody></table></div>}
+          {data.clients.length === 0 ? <p className="empty-state">No active clients yet. Clients become active after their first login.</p> : <div className="table-scroll"><table><thead><tr><th>Client</th><th>Goal</th><th>Trainer</th><th>Spent so far (paid)</th><th>Outstanding (billed)</th><th>Upcoming confirmed</th><th>Booking history</th></tr></thead><tbody>{data.clients.map((client) => <tr key={client.userId}><td>{client.fullName}<br /><small>{client.email}<br />{client.mobileNumber}</small></td><td>{client.fitnessFocus}</td><td>{client.coachName || 'None'}</td><td>{money(client.spentSoFar)}</td><td>{money(client.outstanding)}</td><td>{money(client.upcomingConfirmed)}</td><td><details><summary>{bookingsFor(client.userId).length} sessions</summary>{bookingsFor(client.userId).length === 0 ? <p>No sessions yet.</p> : <ul>{bookingsFor(client.userId).map((booking) => <li key={booking.bookingId}>{when(booking.requestedDatetime)} · {booking.coachName} · {booking.status}{['Confirmed', 'Billed', 'Complete'].includes(booking.status) ? ` · ${money(booking.amount)}` : ''}</li>)}</ul>}</details></td></tr>)}</tbody></table></div>}
         </section>
       </>}
     </>
@@ -206,6 +218,7 @@ function AdminDashboard() {
   const [users, setUsers] = useState([]);
   const [coaches, setCoaches] = useState([]);
   const [emails, setEmails] = useState([]);
+  const [emailDateFilter, setEmailDateFilter] = useState('all');
   const [authenticated, setAuthenticated] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
@@ -220,10 +233,46 @@ function AdminDashboard() {
   const [userForm, setUserForm] = useState({
     fullName: '',
     email: '',
+    mobileNumber: '',
     fitnessFocus: fitnessGoals[0].value,
     accountStatus: 'Lead',
     coachId: 'auto',
   });
+
+  const today = new Date();
+  const todayKey = localDateKey(today);
+  const yesterday = new Date(today);
+  yesterday.setDate(yesterday.getDate() - 1);
+  const yesterdayKey = localDateKey(yesterday);
+  const sevenDayStart = new Date(today);
+  sevenDayStart.setHours(0, 0, 0, 0);
+  sevenDayStart.setDate(sevenDayStart.getDate() - 6);
+  const sevenDayStartKey = localDateKey(sevenDayStart);
+  const emailGroups = [];
+  const emailGroupMap = new Map();
+  for (const email of emails) {
+    const createdAt = emailDateFromTimestamp(email.createdAt);
+    const dateKey = localDateKey(createdAt);
+    if (emailDateFilter === 'today' && dateKey !== todayKey) continue;
+    if (emailDateFilter === '7days' && dateKey < sevenDayStartKey) continue;
+
+    let group = emailGroupMap.get(dateKey);
+    if (!group) {
+      const label = dateKey === todayKey
+        ? 'Today'
+        : dateKey === yesterdayKey
+          ? 'Yesterday'
+          : createdAt.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+      group = { dateKey, label, emails: [] };
+      emailGroupMap.set(dateKey, group);
+      emailGroups.push(group);
+    }
+    group.emails.push(email);
+  }
+  emailGroups.sort((a, b) => b.dateKey.localeCompare(a.dateKey));
+  for (const group of emailGroups) {
+    group.emails.sort((a, b) => emailDateFromTimestamp(b.createdAt) - emailDateFromTimestamp(a.createdAt));
+  }
 
   async function loadDashboard(event) {
     event.preventDefault();
@@ -338,6 +387,7 @@ function AdminDashboard() {
     setUserForm({
       fullName: '',
       email: '',
+      mobileNumber: '',
       fitnessFocus: fitnessGoals[0].value,
       accountStatus: 'Lead',
       coachId: 'auto',
@@ -350,6 +400,7 @@ function AdminDashboard() {
     setUserForm({
       fullName: user.fullName,
       email: user.email,
+      mobileNumber: user.mobileNumber || '',
       fitnessFocus: user.fitnessFocus,
       accountStatus: user.accountStatus || 'Lead',
       coachId: user.coachId || '',
@@ -472,6 +523,8 @@ function AdminDashboard() {
                 <input id="user-name" required minLength="2" maxLength="80" placeholder="Alex Morgan" value={userForm.fullName} onChange={(event) => setUserForm({ ...userForm, fullName: event.target.value })} />
                 <label htmlFor="user-email">Email</label>
                 <input id="user-email" type="email" required maxLength="254" placeholder="alex@example.com" value={userForm.email} onChange={(event) => setUserForm({ ...userForm, email: event.target.value })} />
+                <label htmlFor="user-mobile">Mobile number</label>
+                <input id="user-mobile" type="tel" autoComplete="tel" required maxLength="25" placeholder="+1 555 123 4567" value={userForm.mobileNumber} onChange={(event) => setUserForm({ ...userForm, mobileNumber: event.target.value })} />
                 <label htmlFor="user-focus">Fitness focus</label>
                 <select id="user-focus" required value={userForm.fitnessFocus} onChange={(event) => setUserForm({ ...userForm, fitnessFocus: event.target.value })}>
                   {fitnessGoals.map((focus) => <option key={focus.value} value={focus.value}>{focus.label}</option>)}
@@ -494,9 +547,24 @@ function AdminDashboard() {
                 </div>
               </form>
             )}
-            {users.length === 0 ? <p className="empty-state">No intake users yet.</p> : <div className="table-scroll"><table><thead><tr><th>Name</th><th>Email</th><th>Fitness focus</th><th>Matched trainer</th><th>Status</th><th>Submitted</th><th>Actions</th></tr></thead><tbody>{users.map((user) => <tr key={user.userId}><td>{user.fullName}</td><td>{user.email}</td><td>{user.fitnessFocus}</td><td>{user.coachName || 'No match available'}</td><td>{user.accountStatus || 'Lead'}</td><td>{new Date(`${user.createdAt.replace(' ', 'T')}Z`).toLocaleString()}</td><td><div className="coach-actions"><button type="button" onClick={() => editUser(user)} aria-label={`Edit ${user.fullName}`} disabled={Boolean(deletingUserId)}><Pencil size={14} />Edit</button><button type="button" className="delete-coach" onClick={() => deleteUser(user)} aria-label={`Delete ${user.fullName}`} disabled={Boolean(deletingUserId)}><Trash2 size={14} />{deletingUserId === user.userId ? 'Deleting...' : 'Delete'}</button></div></td></tr>)}</tbody></table></div>}
+            {users.length === 0 ? <p className="empty-state">No intake users yet.</p> :             <div className="table-scroll"><table><thead><tr><th>Name</th><th>Email</th><th>Mobile</th><th>Fitness focus</th><th>Matched trainer</th><th>Status</th><th>Submitted</th><th>Actions</th></tr></thead><tbody>{users.map((user) => <tr key={user.userId}><td>{user.fullName}</td><td>{user.email}</td><td>{user.mobileNumber}</td><td>{user.fitnessFocus}</td><td>{user.coachName || 'No match available'}</td><td>{user.accountStatus || 'Lead'}</td><td>{new Date(`${user.createdAt.replace(' ', 'T')}Z`).toLocaleString()}</td><td><div className="coach-actions"><button type="button" onClick={() => editUser(user)} aria-label={`Edit ${user.fullName}`} disabled={Boolean(deletingUserId)}><Pencil size={14} />Edit</button><button type="button" className="delete-coach" onClick={() => deleteUser(user)} aria-label={`Delete ${user.fullName}`} disabled={Boolean(deletingUserId)}><Trash2 size={14} />{deletingUserId === user.userId ? 'Deleting...' : 'Delete'}</button></div></td></tr>)}</tbody></table></div>}
           </section>
-          <div className="entries"><div className="entries-heading"><h2>Email log</h2><span>{emails.length} total</span></div>{emails.length === 0 ? <p className="empty-state">No emails recorded yet.</p> : <div className="table-scroll"><table><thead><tr><th>Recipient</th><th>Subject</th><th>Status</th><th>Setup email text</th><th>Created</th></tr></thead><tbody>{emails.map((email) => <tr key={email.emailId}><td>{email.recipient}</td><td>{email.subject}</td><td>{email.status}{email.error ? ` (${email.error})` : ''}</td><td><details><summary>View</summary><pre style={{ whiteSpace: 'pre-wrap' }}>{email.bodyText}</pre></details></td><td>{new Date(`${email.createdAt.replace(' ', 'T')}Z`).toLocaleString()}</td></tr>)}</tbody></table></div>}</div>
+          <div className="entries email-log">
+            <div className="entries-heading"><h2>Email log</h2><span>{emails.length} total</span></div>
+            {emails.length === 0 ? <p className="empty-state">No emails recorded yet.</p> : <>
+              <div className="email-log-filters" role="group" aria-label="Filter email log by date">
+                <button type="button" className={emailDateFilter === 'today' ? 'active' : ''} aria-pressed={emailDateFilter === 'today'} onClick={() => setEmailDateFilter('today')}>Today</button>
+                <button type="button" className={emailDateFilter === '7days' ? 'active' : ''} aria-pressed={emailDateFilter === '7days'} onClick={() => setEmailDateFilter('7days')}>Last 7 days</button>
+                <button type="button" className={emailDateFilter === 'all' ? 'active' : ''} aria-pressed={emailDateFilter === 'all'} onClick={() => setEmailDateFilter('all')}>All</button>
+              </div>
+              {emailGroups.length === 0 ? <p className="empty-state">No emails in this date range.</p> : emailGroups.map((group) => (
+                <details className="email-date-group" key={group.dateKey} open={group.dateKey === todayKey}>
+                  <summary><span>{group.label}</span><span className="email-date-count">{group.emails.length} {group.emails.length === 1 ? 'email' : 'emails'}</span></summary>
+                  <div className="table-scroll"><table><thead><tr><th>Recipient</th><th>Subject</th><th>Status</th><th>Setup email text</th><th>Created</th></tr></thead><tbody>{group.emails.map((email) => <tr key={email.emailId}><td>{email.recipient}</td><td>{email.subject}</td><td>{email.status}{email.error ? ` (${email.error})` : ''}</td><td><details><summary>View</summary><pre style={{ whiteSpace: 'pre-wrap' }}>{email.bodyText}</pre></details></td><td>{emailDateFromTimestamp(email.createdAt).toLocaleString()}</td></tr>)}</tbody></table></div>
+                </details>
+              ))}
+            </>}
+          </div>
           <button className="admin-logout" onClick={() => { setAuthenticated(false); setToken(''); setEntries(null); setUsers([]); setCoaches([]); setEmails([]); }}>Lock admin dashboard</button>
         </>}
       </section>
@@ -591,7 +659,7 @@ const fitnessGoals = [
 function IntakePage() {
   const [step, setStep] = useState(0);
   const [goal, setGoal] = useState(() => sessionStorage.getItem('forme-intake-goal') || '');
-  const [form, setForm] = useState({ name: '', email: '' });
+  const [form, setForm] = useState({ name: '', email: '', mobileNumber: '' });
   const [status, setStatus] = useState({ type: '', message: '' });
   const [submitting, setSubmitting] = useState(false);
   const [matchedCoach, setMatchedCoach] = useState(null);
@@ -676,6 +744,9 @@ function IntakePage() {
               <input id="intake-name" name="name" autoComplete="name" placeholder="Alex Morgan" required minLength="2" maxLength="80" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} />
               <label htmlFor="intake-email">Email address</label>
               <input id="intake-email" name="email" type="email" autoComplete="email" placeholder="you@example.com" required maxLength="254" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} />
+              <label htmlFor="intake-mobile">Mobile number</label>
+              <input id="intake-mobile" name="mobileNumber" type="tel" autoComplete="tel" placeholder="+1 555 123 4567" required maxLength="25" value={form.mobileNumber} onChange={(event) => setForm({ ...form, mobileNumber: event.target.value })} />
+              <p className="intake-instruction">Required so your trainer can contact you about sessions and payments. Include your country code for international numbers.</p>
               {status.message && <p className="intake-error" role="alert">{status.message}</p>}
               <button className="intake-next" type="submit" disabled={submitting}>{submitting ? 'Sending...' : 'Finish'} <ArrowRight size={18} /></button>
             </form>
@@ -933,7 +1004,7 @@ function ClientPortal() {
           <section className="intake-content client-dashboard" aria-labelledby="dashboard-title">
             <span className="intake-step-label">CLIENT DASHBOARD &amp; GOAL TRACKING</span>
             <h1 id="dashboard-title">Hi {user.fullName.split(' ')[0]}.</h1>
-            <p className="intake-instruction">Account status: <strong>{user.accountStatus}</strong> · Your goal: <strong>{user.fitnessFocus}</strong></p>
+            <p className="intake-instruction">Account status: <strong>{user.accountStatus}</strong> · Your goal: <strong>{user.fitnessFocus}</strong> · Mobile: <strong>{user.mobileNumber}</strong></p>
             {status.message && <p className={status.type === 'error' ? 'intake-error' : 'intake-instruction'} role="alert">{status.message}</p>}
 
             <form className="intake-form" onSubmit={bookSession}>

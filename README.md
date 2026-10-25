@@ -10,7 +10,7 @@ A light-themed React landing page for discovering personal trainers, with an Exp
 4. Start the app: `npm run dev`
 5. Open the Vite URL shown in the terminal (usually `http://localhost:5173`).
 
-SQLite creates `server/data/waitlist.sqlite` automatically when the API starts. The `waitlist` table stores landing-page signups, while completed intake forms create `Lead` records in `users` with a fitness focus and matched trainer. An intake submission sends a single-use password setup link that expires after 24 hours; the password is stored as a scrypt hash, and setting it does not change the user's `Lead` status. SMTP settings and `PUBLIC_APP_URL` are required for the intake flow to send email. The database also initializes `coaches`, `transactions`, and `sessions` tables. Coaches include an hourly rate, and the four featured landing-page trainers are added to the roster once if they are not already present. Foreign-key constraints are enabled, and deleting a related user or coach applies the configured cascade or coach-unassignment behavior.
+SQLite creates `server/data/waitlist.sqlite` automatically when the API starts. The `waitlist` table stores landing-page signups, while completed intake forms create `Lead` records in `users` with a required mobile number, fitness focus, and matched trainer. Mobile numbers are retained for trainer contact about sessions and payments. An intake submission sends a single-use password setup link that expires after 24 hours; the password is stored as a scrypt hash, and setting it does not change the user's `Lead` status. SMTP settings and `PUBLIC_APP_URL` are required for the intake flow to send email. The database also initializes `coaches`, `transactions`, and `sessions` tables. Coaches include an hourly rate, and the four featured landing-page trainers are added to the roster once if they are not already present. Foreign-key constraints are enabled, and deleting a related user or coach applies the configured cascade or coach-unassignment behavior.
 
 ## Viewing waitlist responses
 
@@ -23,10 +23,10 @@ Run `npm run build`, then set `ADMIN_TOKEN` and run `npm start`. The Express ser
 ## API
 
 - `POST /api/waitlist` - accepts `{ "name": "...", "email": "...", "goal": "..." }`.
-- `POST /api/intake` - creates a Lead user from `{ "name": "...", "email": "...", "goal": "..." }` and returns the best matching trainer.
+- `POST /api/intake` - creates a Lead user from `{ "name": "...", "email": "...", "mobileNumber": "...", "goal": "..." }` and returns the best matching trainer. A valid mobile number with 7 to 15 digits is required.
 - `POST /api/account/setup` - accepts `{ "token": "...", "password": "..." }` from the emailed account setup link; tokens are single-use and expire after 24 hours.
 - `GET /api/users` - lists intake users and their matched trainers; requires admin authorization.
-- `POST /api/users` - adds a user; requires admin authorization. Accepts `{ "fullName": "...", "email": "...", "fitnessFocus": "...", "accountStatus": "Lead", "coachId": "auto" }`.
+- `POST /api/users` - adds a user; requires admin authorization. Accepts `{ "fullName": "...", "email": "...", "mobileNumber": "...", "fitnessFocus": "...", "accountStatus": "Lead", "coachId": "auto" }`.
 - `PUT /api/users/:userId` - updates user details, status, and trainer match; requires admin authorization.
 - `DELETE /api/users/:userId` - deletes a user; requires admin authorization.
 - `GET /api/waitlist` - returns signup entries; requires the configured admin token.

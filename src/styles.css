@@ -102,6 +102,15 @@ h1, h2, h3, p { margin-top: 0; }
 .waitlist-footer { grid-column: 1 / -1; align-self: end; display: flex; align-items: center; justify-content: center; gap: 15px; padding-top: 24px; color: #d1dac8; font-size: 8px; letter-spacing: 1.5px; }.waitlist-footer svg { color: #d2e294; }
 .site-footer { min-height: 81px; padding: 0 8%; display: flex; align-items: center; justify-content: space-between; color: #878a81; font-size: 10px; }.site-footer .brand { color: var(--ink); font-size: 19px; }.site-footer .brand-mark { width: 25px; height: 25px; }.admin-link { font-size: 9px; color: #84877d; }
 .admin-page { min-height: 100vh; padding: 36px 8%; background: #f8f8f5; }.admin-panel { max-width: 900px; margin: 60px auto; padding: 36px; background: white; border: 1px solid var(--line); border-radius: 5px; }.admin-panel h1 { margin: 12px 0; font: 600 34px 'Manrope',sans-serif; letter-spacing: -1px; }.admin-panel > p { color: var(--muted); font-size: 13px; }.admin-form { max-width: 400px; display: flex; flex-direction: column; gap: 9px; margin-top: 25px; }.admin-form .button { margin-top: 6px; align-self: start; }.entries { margin-top: 38px; }.entries-heading { display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line); padding-bottom: 13px; }.entries-heading h2 { margin: 0; font: 600 19px 'Manrope',sans-serif; }.entries-heading > span { color: var(--muted); font-size: 11px; }.table-scroll { overflow-x: auto; }table { width: 100%; border-collapse: collapse; text-align: left; font-size: 11px; }th { padding: 12px 10px; color: #7c8076; font-size: 9px; text-transform: uppercase; letter-spacing: .7px; }td { padding: 13px 10px; border-top: 1px solid #eff0ec; color: #56594f; vertical-align: top; }td:first-child { color: var(--ink); font-weight: 600; }.empty-state { margin: 17px 0; color: var(--muted); font-size: 12px; }
+.email-log-filters { display: flex; gap: 8px; margin: 16px 0; }
+.email-log-filters button { padding: 7px 12px; border: 1px solid var(--line); border-radius: 999px; background: white; color: var(--ink); font: inherit; font-size: 10px; cursor: pointer; }
+.email-log-filters button.active { border-color: #2f4733; background: #2f4733; color: white; }
+.email-date-group { margin: 0 0 10px; border: 1px solid var(--line); border-radius: 3px; }
+.email-date-group > summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; color: var(--ink); font-size: 12px; font-weight: 600; cursor: pointer; list-style-position: inside; }
+.email-date-count { color: var(--muted); font-size: 10px; font-weight: 400; }
+.email-date-group .table-scroll { padding: 0 8px 8px; }
+.email-date-group table { min-width: 650px; }
+.email-date-group td:first-child { font-weight: 500; }
 .trainer-admin-form { max-width: none; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 18px; align-items: center; }
 .trainer-admin-form .button { grid-column: 1 / -1; }
 .trainer-form-actions, .coach-actions { display: flex; align-items: center; gap: 10px; }
