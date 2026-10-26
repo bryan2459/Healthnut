@@ -171,6 +171,8 @@ h1, h2, h3, p { margin-top: 0; }
 .intake-form input { width: 100%; padding: 13px 14px; border: 1px solid #e2e4dc; border-radius: 4px; outline: none; background: #fff; font-size: 13px; }
 .intake-form input:focus { border-color: #89976a; box-shadow: 0 0 0 3px #89976a1a; }
 .intake-form select { width: 100%; padding: 13px 14px; border: 1px solid #e2e4dc; border-radius: 4px; background: #fff; font-size: 13px; }
+.password-reset-link { align-self: flex-start; margin-top: 14px; padding: 0; border: 0; background: transparent; color: var(--green); font-size: 12px; text-decoration: underline; cursor: pointer; }
+.password-reset-link:hover { color: #798d4d; }
 .client-dashboard h2 { margin: 34px 0 6px; font: 600 19px 'Manrope',sans-serif; }
 .client-dashboard .intake-form { max-width: 440px; margin-top: 24px; }
 .client-dashboard .intake-form h2 { margin: 0 0 14px; }

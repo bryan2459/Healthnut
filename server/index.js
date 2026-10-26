@@ -114,6 +114,14 @@ db.exec(`
     used_at INTEGER,
     FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
   );
+
+  CREATE TABLE IF NOT EXISTS password_reset_tokens (
+    token_hash TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    expires_at INTEGER NOT NULL,
+    used_at INTEGER,
+    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+  );
 `);
 
 const userColumns = new Set(db.pragma('table_info(users)').map((column) => column.name));
@@ -269,6 +277,17 @@ const focusKeywords = {
   'Energy & health': ['health', 'wellness', 'confidence', 'strength'],
 };
 
+// While no sending domain is verified, EMAIL_REDIRECT_TO sends every email to that address instead.
+function applyEmailRedirect({ to, subject, text }) {
+  const redirectTo = process.env.EMAIL_REDIRECT_TO;
+  if (!redirectTo || to.toLowerCase() === redirectTo.toLowerCase()) return { to, subject, text };
+  return {
+    to: redirectTo,
+    subject: `[for ${to}] ${subject}`,
+    text: `Redirected: originally addressed to ${to}\n\n${text}`,
+  };
+}
+
 function getMailSettings() {
   const { SMTP_HOST, SMTP_PORT, SMTP_SECURE, SMTP_USER, SMTP_PASSWORD, EMAIL_FROM, PUBLIC_APP_URL } = process.env;
   if (!SMTP_HOST || !SMTP_USER || !SMTP_PASSWORD || !EMAIL_FROM || !PUBLIC_APP_URL) return null;
@@ -317,7 +336,9 @@ async function verifyPassword(password, stored) {
   return derivedKey.length === expected.length && timingSafeEqual(derivedKey, expected);
 }
 
-async function sendLoggedEmail({ userId, to, subject, text }) {
+async function sendLoggedEmail(original) {
+  const { userId } = original;
+  const { to, subject, text } = applyEmailRedirect(original);
   let mailSettings = null;
   if (emailDeliveryEnabled) {
     try {
@@ -428,9 +449,7 @@ app.post('/api/intake', async (req, res) => {
     const loginUrl = new URL('/login', appUrl);
     const message = {
       from: mailSettings?.from || process.env.EMAIL_FROM || 'Forme <no-reply@forme.test>',
-      to: email,
-      subject: 'Your Forme account and temporary password',
-      text: `Hi ${fullName},\n\nThanks for finding your fit with Forme. Your account has been created.\n\nLog in here: ${loginUrl.href}\nEmail: ${email}\nTemporary password: ${tempPassword}\n\nYou will be asked to choose a new password the first time you log in. Your account status is Lead until then.\n\nIf you didn’t request this, you can ignore this email.`,
+      ...applyEmailRedirect({ to: email, subject: 'Your Forme account and temporary password', text: `Hi ${fullName},\n\nThanks for finding your fit with Forme. Your account has been created.\n\nLog in here: ${loginUrl.href}\nEmail: ${email}\nTemporary password: ${tempPassword}\n\nYou will be asked to choose a new password the first time you log in. Your account status is Lead until then.\n\nIf you didn’t request this,       you can ignore this email.` }),
     };
     const logEmail = (status, errorMessage = null) => db.prepare(`
       INSERT INTO email_log (user_id, recipient, sender, subject, body_text, status, error)
@@ -565,6 +584,96 @@ app.post('/api/auth/login', async (req, res) => {
   } catch (error) {
     console.error('Could not log in:', error);
     return res.status(500).json({ error: 'We couldn’t log you in. Please try again.' });
+  }
+});
+
+const passwordResetAttempts = new Map();
+
+app.post('/api/auth/request-password-reset', async (req, res) => {
+  const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+  const throttleKey = `${req.ip}|${email}`;
+  const now = Date.now();
+  const recent = (passwordResetAttempts.get(throttleKey) || []).filter((time) => now - time < 15 * 60 * 1000);
+  passwordResetAttempts.set(throttleKey, recent);
+  if (recent.length >= 3) {
+    return res.status(429).json({ error: 'Too many requests. Please try again in a few minutes.' });
+  }
+  recent.push(now);
+
+  try {
+    const user = email
+      ? db.prepare('SELECT user_id AS userId, full_name AS fullName FROM users WHERE email = ?').get(email)
+      : null;
+    if (user) {
+      const token = randomBytes(32).toString('base64url');
+      const tokenHash = hashSetupToken(token);
+      db.prepare('UPDATE password_reset_tokens SET used_at = ? WHERE user_id = ? AND used_at IS NULL')
+        .run(now, user.userId);
+      db.prepare('INSERT INTO password_reset_tokens (token_hash, user_id, expires_at) VALUES (?, ?, ?)')
+        .run(tokenHash, user.userId, now + 60 * 60 * 1000);
+      const appUrl = process.env.PUBLIC_APP_URL || 'http://localhost:5173';
+      const resetUrl = new URL('/login', appUrl);
+      resetUrl.searchParams.set('reset', token);
+      await sendLoggedEmail({
+        userId: user.userId,
+        to: email,
+        subject: 'Reset your Forme password',
+        text: `Hi ${user.fullName},\n\nWe received a request to reset your Forme password. Use this link within one hour:\n\n${resetUrl.href}\n\nIf you didn’t request a password reset, you can ignore this email.`,
+      });
+    }
+    return res.json({ message: 'If an account exists for that email, we’ve sent a password reset link.' });
+  } catch (error) {
+    console.error('Could not request a password reset:', error);
+    return res.status(500).json({ error: 'We couldn’t send a password reset link. Please try again.' });
+  }
+});
+
+app.post('/api/auth/reset-password', async (req, res) => {
+  const token = typeof req.body?.token === 'string' ? req.body.token : '';
+  const password = typeof req.body?.password === 'string' ? req.body.password : '';
+  if (!token || token.length > 256) {
+    return res.status(400).json({ error: 'This password reset link is invalid or has expired.' });
+  }
+  if (password.length < 12 || password.length > 128) {
+    return res.status(400).json({ error: 'Choose a password between 12 and 128 characters.' });
+  }
+
+  try {
+    const tokenHash = hashSetupToken(token);
+    const resetToken = db.prepare(`
+      SELECT user_id AS userId
+      FROM password_reset_tokens
+      WHERE token_hash = ? AND used_at IS NULL AND expires_at > ?
+    `).get(tokenHash, Date.now());
+    if (!resetToken) {
+      return res.status(400).json({ error: 'This password reset link is invalid or has expired.' });
+    }
+
+    const passwordHash = await hashPassword(password);
+    const resetPassword = db.transaction(() => {
+      const resetTime = Date.now();
+      const claimedToken = db.prepare(`
+        UPDATE password_reset_tokens SET used_at = ?
+        WHERE token_hash = ? AND used_at IS NULL AND expires_at > ?
+      `).run(resetTime, tokenHash, resetTime);
+      if (claimedToken.changes !== 1) return false;
+      db.prepare(`
+        UPDATE users SET password_hash = ?, must_change_password = 0,
+          account_status = CASE WHEN account_status = 'Lead' THEN 'Active' ELSE account_status END
+        WHERE user_id = ?
+      `).run(passwordHash, resetToken.userId);
+      db.prepare('UPDATE password_reset_tokens SET used_at = ? WHERE user_id = ? AND used_at IS NULL')
+        .run(resetTime, resetToken.userId);
+      db.prepare('DELETE FROM client_sessions WHERE user_id = ?').run(resetToken.userId);
+      return true;
+    });
+    if (!resetPassword()) {
+      return res.status(400).json({ error: 'This password reset link is invalid or has expired.' });
+    }
+    return res.json({ message: 'Your password has been reset. You can now log in.' });
+  } catch (error) {
+    console.error('Could not reset password:', error);
+    return res.status(500).json({ error: 'We couldn’t reset your password. Please try again.' });
   }
 });
 

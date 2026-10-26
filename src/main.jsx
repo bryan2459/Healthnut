@@ -858,6 +858,9 @@ function ClientPortal() {
   const [data, setData] = useState(null);
   const [loginForm, setLoginForm] = useState({ email: '', password: '' });
   const [passwordForm, setPasswordForm] = useState({ currentPassword: '', newPassword: '', confirmPassword: '' });
+  const [resetPasswordForm, setResetPasswordForm] = useState({ password: '', confirmPassword: '' });
+  const [authView, setAuthView] = useState(() => new URLSearchParams(window.location.search).has('reset') ? 'reset' : 'login');
+  const [resetToken] = useState(() => new URLSearchParams(window.location.search).get('reset') || '');
   const [bookingTime, setBookingTime] = useState('');
   const [status, setStatus] = useState({ type: '', message: '' });
   const [busy, setBusy] = useState(false);
@@ -906,6 +909,35 @@ function ClientPortal() {
       sessionStorage.setItem('forme-client-token', result.token);
       setLoginForm({ email: '', password: '' });
       setToken(result.token);
+    });
+  };
+
+  const requestPasswordReset = (event) => {
+    event.preventDefault();
+    run(async () => {
+      await api('/api/auth/request-password-reset', {
+        method: 'POST',
+        body: JSON.stringify({ email: loginForm.email }),
+      }, '');
+      setStatus({ type: 'success', message: 'If an account exists for that email, we’ve sent a password reset link.' });
+      setAuthView('sent');
+    });
+  };
+
+  const resetPassword = (event) => {
+    event.preventDefault();
+    if (resetPasswordForm.password !== resetPasswordForm.confirmPassword) {
+      setStatus({ type: 'error', message: 'Your new passwords do not match.' });
+      return;
+    }
+    run(async () => {
+      await api('/api/auth/reset-password', {
+        method: 'POST',
+        body: JSON.stringify({ token: resetToken, password: resetPasswordForm.password }),
+      }, '');
+      window.history.replaceState({}, '', window.location.pathname);
+      setStatus({ type: 'success', message: 'Your password has been reset. You can now log in.' });
+      setAuthView('reset-success');
     });
   };
 
@@ -964,7 +996,7 @@ function ClientPortal() {
           {token && <button className="intake-save" type="button" onClick={() => api('/api/auth/logout', { method: 'POST' }).catch(() => {}).finally(() => signOut())}>Log out</button>}
         </header>
 
-        {!token && (
+        {!token && authView === 'login' && (
           <section className="intake-content setup-content" aria-labelledby="login-title">
             <span className="intake-step-label">WELCOME BACK</span>
             <h1 id="login-title">Log in to Forme.</h1>
@@ -974,9 +1006,59 @@ function ClientPortal() {
               <input id="login-email" type="email" autoComplete="email" required maxLength="254" value={loginForm.email} onChange={(event) => setLoginForm({ ...loginForm, email: event.target.value })} />
               <label htmlFor="login-password">Password</label>
               <input id="login-password" type="password" autoComplete="current-password" required maxLength="128" value={loginForm.password} onChange={(event) => setLoginForm({ ...loginForm, password: event.target.value })} />
+              <button className="password-reset-link" type="button" onClick={() => { setStatus({ type: '', message: '' }); setAuthView('request'); }}>Forgot password?</button>
               {status.message && <p className="intake-error" role="alert">{status.message}</p>}
               <button className="intake-next" type="submit" disabled={busy}>{busy ? 'Logging in...' : 'Log in'} <ArrowRight size={18} /></button>
             </form>
+          </section>
+        )}
+
+        {!token && authView === 'request' && (
+          <section className="intake-content setup-content" aria-labelledby="reset-request-title">
+            <span className="intake-step-label">ACCOUNT RECOVERY</span>
+            <h1 id="reset-request-title">Reset your password.</h1>
+            <p className="intake-instruction">Enter the email address for your account and we’ll send you a reset link.</p>
+            <form className="intake-form" onSubmit={requestPasswordReset}>
+              <label htmlFor="reset-email">Email address</label>
+              <input id="reset-email" type="email" autoComplete="email" required maxLength="254" value={loginForm.email} onChange={(event) => setLoginForm({ ...loginForm, email: event.target.value })} />
+              {status.message && <p className="intake-error" role="alert">{status.message}</p>}
+              <button className="intake-next" type="submit" disabled={busy}>{busy ? 'Sending...' : 'Send reset link'} <ArrowRight size={18} /></button>
+              <button className="password-reset-link" type="button" onClick={() => { setStatus({ type: '', message: '' }); setAuthView('login'); }}>Back to log in</button>
+            </form>
+          </section>
+        )}
+
+        {!token && authView === 'sent' && (
+          <section className="intake-content setup-content" aria-labelledby="reset-sent-title">
+            <span className="intake-step-label">ACCOUNT RECOVERY</span>
+            <h1 id="reset-sent-title">Check your email.</h1>
+            <p className="intake-instruction" role="status">{status.message}</p>
+            <button className="password-reset-link" type="button" onClick={() => { setStatus({ type: '', message: '' }); setAuthView('login'); }}>Back to log in</button>
+          </section>
+        )}
+
+        {!token && authView === 'reset' && (
+          <section className="intake-content setup-content" aria-labelledby="reset-password-title">
+            <span className="intake-step-label">ACCOUNT RECOVERY</span>
+            <h1 id="reset-password-title">Choose a new password.</h1>
+            <p className="intake-instruction">Choose a password between 12 and 128 characters.</p>
+            <form className="intake-form" onSubmit={resetPassword}>
+              <label htmlFor="reset-new-password">New password</label>
+              <input id="reset-new-password" type="password" autoComplete="new-password" required minLength="12" maxLength="128" value={resetPasswordForm.password} onChange={(event) => setResetPasswordForm({ ...resetPasswordForm, password: event.target.value })} />
+              <label htmlFor="reset-confirm-password">Confirm new password</label>
+              <input id="reset-confirm-password" type="password" autoComplete="new-password" required minLength="12" maxLength="128" value={resetPasswordForm.confirmPassword} onChange={(event) => setResetPasswordForm({ ...resetPasswordForm, confirmPassword: event.target.value })} />
+              {status.message && <p className="intake-error" role="alert">{status.message}</p>}
+              <button className="intake-next" type="submit" disabled={busy}>{busy ? 'Saving...' : 'Reset password'} <ArrowRight size={18} /></button>
+            </form>
+          </section>
+        )}
+
+        {!token && authView === 'reset-success' && (
+          <section className="intake-content setup-content" aria-labelledby="reset-success-title">
+            <span className="intake-step-label">ACCOUNT RECOVERY</span>
+            <h1 id="reset-success-title">Password updated.</h1>
+            <p className="intake-instruction" role="status">{status.message}</p>
+            <button className="password-reset-link" type="button" onClick={() => { setStatus({ type: '', message: '' }); setAuthView('login'); }}>Back to log in</button>
           </section>
         )}
 
