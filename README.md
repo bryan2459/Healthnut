@@ -18,7 +18,15 @@ Open the admin dashboard at `http://localhost:5173/admin` (or your deployed app'
 
 ## Production
 
-Run `npm run build`, then set `ADMIN_TOKEN` and run `npm start`. The Express server serves the built React app and API. Keep the SQLite data directory on persistent storage when deploying.
+Run `npm run build`, then set `ADMIN_TOKEN` and run `npm start`. The Express server serves the built React app and API. Keep the SQLite data directory on persistent storage when deploying; set `DATA_DIR` to a persistent disk path.
+
+### Deploy to Render with healthnut.dev
+
+1. In Render, choose **New → Blueprint** and select this repository. [render.yaml](render.yaml) creates a web service with a persistent disk mounted at `/var/data` (paid plan required for disks).
+2. Fill in the secret variables Render prompts for (`ADMIN_TOKEN`, SMTP settings, `EMAIL_FROM`, `BOOKING_NOTIFY_EMAIL`).
+3. In the service's **Settings → Custom Domains**, add `healthnut.dev` and `www.healthnut.dev`.
+4. In Cloudflare **DNS → Records**, add the records Render shows (a CNAME for `www`; for the apex, a CNAME to the `.onrender.com` hostname, which Cloudflare flattens). Set them to **DNS only** until Render verifies the domain, then SSL/TLS mode **Full**.
+5. `PUBLIC_APP_URL` is `https://healthnut.dev`, which password setup and reset emails use. To send from your own domain, verify `healthnut.dev` in Resend and update `EMAIL_FROM`.
 
 ## API
 

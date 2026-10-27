@@ -18,7 +18,7 @@ const bookingNotifyEmail = process.env.BOOKING_NOTIFY_EMAIL || 'mvs390@gmail.com
 const app = express();
 const port = Number(process.env.PORT) || 3001;
 const here = path.dirname(fileURLToPath(import.meta.url));
-const dataDirectory = path.join(here, 'data');
+const dataDirectory = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : path.join(here, 'data');
 fs.mkdirSync(dataDirectory, { recursive: true });
 
 const db = new Database(path.join(dataDirectory, 'waitlist.sqlite'));
