@@ -6,11 +6,11 @@ A light-themed React landing page for discovering personal trainers, with an Exp
 
 1. Install Node.js 18 or newer.
 2. Install dependencies: `npm install`
-3. Copy `.env.example` to `.env`, set `ADMIN_TOKEN` to a long, private random value, and configure SMTP email settings.
+3. Copy `.env.example` to `.env`, set `ADMIN_TOKEN` to a long, private random value, and configure the Resend API key and sender.
 4. Start the app: `npm run dev`
 5. Open the Vite URL shown in the terminal (usually `http://localhost:5173`).
 
-SQLite creates `server/data/waitlist.sqlite` automatically when the API starts. The `waitlist` table stores landing-page signups, while completed intake forms create `Lead` records in `users` with a required mobile number, fitness focus, and matched trainer. Mobile numbers are retained for trainer contact about sessions and payments. An intake submission sends a single-use password setup link that expires after 24 hours; the password is stored as a scrypt hash, and setting it does not change the user's `Lead` status. SMTP settings and `PUBLIC_APP_URL` are required for the intake flow to send email. The database also initializes `coaches`, `transactions`, and `sessions` tables. Coaches include an hourly rate, and the four featured landing-page trainers are added to the roster once if they are not already present. Foreign-key constraints are enabled, and deleting a related user or coach applies the configured cascade or coach-unassignment behavior.
+SQLite creates `server/data/waitlist.sqlite` automatically when the API starts. The `waitlist` table stores landing-page signups, while completed intake forms create `Lead` records in `users` with a required mobile number, fitness focus, and matched trainer. Mobile numbers are retained for trainer contact about sessions and payments. An intake submission sends a single-use password setup link that expires after 24 hours; the password is stored as a scrypt hash, and setting it does not change the user's `Lead` status. `RESEND_API_KEY`, `EMAIL_FROM`, and `PUBLIC_APP_URL` are required for email delivery. Emails are sent through Resend's HTTPS API. The database also initializes `coaches`, `transactions`, and `sessions` tables. Coaches include an hourly rate, and the four featured landing-page trainers are added to the roster once if they are not already present. Foreign-key constraints are enabled, and deleting a related user or coach applies the configured cascade or coach-unassignment behavior.
 
 ## Viewing waitlist responses
 
@@ -18,15 +18,15 @@ Open the admin dashboard at `http://localhost:5173/admin` (or your deployed app'
 
 ## Production
 
-Run `npm run build`, then set `ADMIN_TOKEN` and run `npm start`. The Express server serves the built React app and API. Keep the SQLite data directory on persistent storage when deploying; set `DATA_DIR` to a persistent disk path.
+Run `npm run build`, then set `ADMIN_TOKEN` and run `npm start`. The Express server serves the built React app and API. For deployments that need durable SQLite data, set `DATA_DIR` to a persistent disk path.
 
 ### Deploy to Render with healthnut.dev
 
-1. In Render, choose **New → Blueprint** and select this repository. [render.yaml](render.yaml) creates a web service with a persistent disk mounted at `/var/data` (paid plan required for disks).
-2. Fill in the secret variables Render prompts for (`ADMIN_TOKEN`, SMTP settings, `EMAIL_FROM`, `BOOKING_NOTIFY_EMAIL`).
+1. In Render, choose **New → Blueprint** and select this repository. [render.yaml](render.yaml) creates a free web service. Its filesystem is ephemeral, so SQLite signups may be lost after a restart or redeploy.
+2. Fill in the secret variables Render prompts for (`ADMIN_TOKEN`, `RESEND_API_KEY`, `EMAIL_FROM`, `BOOKING_NOTIFY_EMAIL`).
 3. In the service's **Settings → Custom Domains**, add `healthnut.dev` and `www.healthnut.dev`.
 4. In Cloudflare **DNS → Records**, add the records Render shows (a CNAME for `www`; for the apex, a CNAME to the `.onrender.com` hostname, which Cloudflare flattens). Set them to **DNS only** until Render verifies the domain, then SSL/TLS mode **Full**.
-5. `PUBLIC_APP_URL` is `https://healthnut.dev`, which password setup and reset emails use. To send from your own domain, verify `healthnut.dev` in Resend and update `EMAIL_FROM`.
+5. `PUBLIC_APP_URL` is set to the Render service URL, which password setup and reset emails use. If you connect a custom domain, update it to that domain. Verify your sending domain in Resend and update `EMAIL_FROM` to an address on that domain to send to arbitrary recipients. Resend's `onboarding@resend.dev` test sender is restricted to your Resend account email; you can temporarily set `EMAIL_REDIRECT_TO` to that address while testing.
 
 ## API
 

@@ -10,18 +10,10 @@ services:
       - key: NODE_VERSION
         value: 20
       - key: PUBLIC_APP_URL
-        value: https://healthnut.dev
+        value: https://healthnut-ozwo.onrender.com
       - key: ADMIN_TOKEN
         sync: false
-      - key: SMTP_HOST
-        sync: false
-      - key: SMTP_PORT
-        sync: false
-      - key: SMTP_SECURE
-        sync: false
-      - key: SMTP_USER
-        sync: false
-      - key: SMTP_PASSWORD
+      - key: RESEND_API_KEY
         sync: false
       - key: EMAIL_FROM
         sync: false

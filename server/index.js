@@ -6,7 +6,6 @@ import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
 import { createHash, randomBytes, randomUUID, scrypt as scryptCallback, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
-import nodemailer from 'nodemailer';
 
 const scrypt = promisify(scryptCallback);
 const setupTokenLifetimeMs = 24 * 60 * 60 * 1000;
@@ -294,11 +293,10 @@ function applyEmailRedirect({ to, subject, text }) {
   };
 }
 
-function getMailSettings() {
-  const { SMTP_HOST, SMTP_PORT, SMTP_SECURE, SMTP_USER, SMTP_PASSWORD, EMAIL_FROM, PUBLIC_APP_URL } = process.env;
-  if (!SMTP_HOST || !SMTP_USER || !SMTP_PASSWORD || !EMAIL_FROM || !PUBLIC_APP_URL) return null;
+function getEmailSettings() {
+  const { RESEND_API_KEY, EMAIL_FROM, PUBLIC_APP_URL } = process.env;
+  if (!RESEND_API_KEY || !EMAIL_FROM || !PUBLIC_APP_URL) return null;
 
-  const port = Number(SMTP_PORT) || 587;
   let appUrl;
   try {
     appUrl = new URL(PUBLIC_APP_URL);
@@ -308,20 +306,34 @@ function getMailSettings() {
   if (appUrl.protocol !== 'https:' && !(appUrl.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(appUrl.hostname))) {
     throw new Error('PUBLIC_APP_URL must use HTTPS, except for localhost development.');
   }
-  if (!Number.isInteger(port) || port < 1 || port > 65535) {
-    throw new Error('SMTP_PORT must be a valid port number.');
-  }
 
   return {
     appUrl: appUrl.origin,
     from: EMAIL_FROM,
-    transport: nodemailer.createTransport({
-      host: SMTP_HOST,
-      port,
-      secure: SMTP_SECURE === undefined ? port === 465 : SMTP_SECURE.toLowerCase() === 'true',
-      auth: { user: SMTP_USER, pass: SMTP_PASSWORD },
-    }),
+    apiKey: RESEND_API_KEY,
   };
+}
+
+async function sendEmail(apiKey, { from, to, subject, text }) {
+  const response = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ from, to, subject, text }),
+    signal: AbortSignal.timeout(15000),
+  });
+  if (!response.ok) {
+    const responseText = await response.text();
+    let errorMessage = responseText || response.statusText;
+    try {
+      errorMessage = JSON.parse(responseText).message || errorMessage;
+    } catch {
+      // Keep the response text when the provider does not return JSON.
+    }
+    throw new Error(`Resend request failed (${response.status}): ${errorMessage}`);
+  }
 }
 
 function hashSetupToken(token) {
@@ -348,7 +360,7 @@ async function sendLoggedEmail(original) {
   let mailSettings = null;
   if (emailDeliveryEnabled) {
     try {
-      mailSettings = getMailSettings();
+      mailSettings = getEmailSettings();
     } catch (error) {
       console.error('Email configuration is invalid:', error);
     }
@@ -365,7 +377,7 @@ async function sendLoggedEmail(original) {
     return false;
   }
   try {
-    await mailSettings.transport.sendMail({ from, to, subject, text });
+    await sendEmail(mailSettings.apiKey, { from, to, subject, text });
     log('sent');
     return true;
   } catch (error) {
@@ -425,7 +437,7 @@ app.post('/api/intake', async (req, res) => {
   let appUrl;
   if (emailDeliveryEnabled) {
     try {
-      mailSettings = getMailSettings();
+      mailSettings = getEmailSettings();
     } catch (error) {
       console.error('Account setup email configuration is invalid:', error);
       return res.status(503).json({ error: 'We can’t send account setup emails right now. Please try again later.' });
@@ -464,7 +476,7 @@ app.post('/api/intake', async (req, res) => {
 
     if (mailSettings) {
       try {
-        await mailSettings.transport.sendMail(message);
+        await sendEmail(mailSettings.apiKey, message);
         logEmail('sent');
       } catch (error) {
         logEmail('failed', String(error.message || error).slice(0, 500));
