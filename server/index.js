@@ -260,6 +260,12 @@ app.post('/api/waitlist', (req, res) => {
     const result = db.prepare(
       'INSERT INTO waitlist (name, email, goal) VALUES (?, ?, ?)'
     ).run(name, email, goal);
+    sendLoggedEmail({
+      userId: null,
+      to: email,
+      subject: "You're on the Forme waitlist",
+      text: `Hi ${name},\n\nThanks for joining the Forme waitlist. You're on the list, and we'll be in touch as soon as we have a trainer match for you.\n\nThe Forme team`,
+    }).catch((error) => console.error('Waitlist confirmation failed:', error));
     return res.status(201).json({ message: 'You?re on the list!', id: result.lastInsertRowid });
   } catch (error) {
     if (error.code === 'SQLITE_CONSTRAINT_UNIQUE') {
